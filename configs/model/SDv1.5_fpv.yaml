@@ -1,16 +1,16 @@
-name: SDv1.5_fpv_video
-pretrained_model_name_or_path: pretrained/stable-diffusion-v1-5/
+name: SDv1.5_fpv
+pretrained_model_name_or_path: runwayml/stable-diffusion-v1-5
 # bbox_mode: 'all-xyz'
 # bbox_view_shared: false
 crossview_attn_type: basic
 train_with_same_noise: false
 train_with_same_t: true
 
-runner_module: magicdrive.runner.fpv_video_runner.FPVVideoRunner
+runner_module: magicdrive.runner.fpv_video_runner.FPVRunner
 
 pipe_module: magicdrive.pipeline.pipeline_bev_controlnet.StableDiffusionBEVControlNetPipeline
 
-unet_module: magicdrive.networks.unet_2d_condition_multiview.UNet2DConditionModelMultiview
+unet_module: magicdrive.networks.unet_2d_condition_fpv.UNet2DConditionModelFPV
 use_fp32_for_unet_trainable: true
 unet_dir: unet
 unet:
@@ -21,9 +21,9 @@ unet:
   crossview_attn_type: ${..crossview_attn_type}
   img_size: ${dataset.image_size}
     
-model_module: diffusers.pipelines.controlnet.multicontrolnet.MultiControlNetModel
+# model_module: diffusers.pipelines.controlnet.multicontrolnet.MultiControlNetModel
 controlnets:
-  - name: fpv_semantic_map
+  - name: semantic_map
     module: diffusers.models.controlnet.ControlNetModel
-  - name: fpv_depth
+  - name: depth
     module: diffusers.models.controlnet.ControlNetModel

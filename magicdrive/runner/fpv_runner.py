@@ -14,6 +14,7 @@ from diffusers import (
     DDPMScheduler,
     UNet2DConditionModel,
 )
+from diffusers.pipelines.controlnet.multicontrolnet import MultiControlNetModel
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 from diffusers.optimization import get_scheduler
 
@@ -94,7 +95,7 @@ class ControlnetUnetWrapper(ModelMixin):
         return model_pred
 
 
-class FPVVideoRunner(BaseRunner):
+class FPVRunner(BaseRunner):
 
     def __init__(self, cfg, accelerator, train_set, val_set) -> None:
         super().__init__(cfg, accelerator, train_set, val_set)
@@ -116,10 +117,14 @@ class FPVVideoRunner(BaseRunner):
         unet_param = OmegaConf.to_container(self.cfg.model.unet, resolve=True)
         self.unet = model_cls.from_unet_2d_condition(unet, **unet_param)
 
-        model_cls = load_module(cfg.model.model_module)
-        controlnet_param = OmegaConf.to_container(self.cfg.model.controlnet,
-                                                  resolve=True)
-        self.controlnet = model_cls.from_unet(unet, **controlnet_param)
+        # MultiControlNetModel
+        controlnets = dict()
+        controlnets_param = OmegaConf.to_container(self.cfg.model.controlnets,
+                                                   resolve=True)
+        for key, val in controlnets_param.items():
+            ctrl_net_module = load_module(val)
+            controlnets[key] = ctrl_net_module.from_unet(unet)
+        self.controlnet = MultiControlNetModel(controlnets=controlnets)
 
     def _set_model_trainable_state(self, train=True):
         # set trainable status
