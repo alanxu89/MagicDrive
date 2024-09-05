@@ -55,6 +55,8 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
         neighboring_view_pair: Optional[Dict[int, List[int]]] = None,
         neighboring_attn_type: Optional[str] = "add",
         zero_module_type="zero_linear",
+        # temporal
+        frames=16,
     ):
         super().__init__(dim, num_attention_heads, attention_head_dim, dropout,
                          cross_attention_dim, activation_fn,
@@ -65,6 +67,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
 
         self.neighboring_view_pair = _ensure_kv_is_int(neighboring_view_pair)
         self.neighboring_attn_type = neighboring_attn_type
+        self.frames = frames
 
         # multiview attention
         self.norm4 = (AdaLayerNorm(dim, num_embeds_ada_norm)
@@ -101,6 +104,20 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             dim_head=attention_head_dim,
             dropout=dropout,
             bias=None,
+            upcast_attention=upcast_attention,
+        )
+
+        # temporal attention
+        self.norm6 = (AdaLayerNorm(dim, num_embeds_ada_norm)
+                      if self.use_ada_layer_norm else nn.LayerNorm(
+                          dim, elementwise_affine=norm_elementwise_affine))
+        self.attn6 = Attention(
+            query_dim=dim,
+            cross_attention_dim=dim,
+            heads=num_attention_heads,
+            dim_head=attention_head_dim,
+            dropout=dropout,
+            bias=attention_bias,
             upcast_attention=upcast_attention,
         )
 
@@ -167,6 +184,9 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
         cross_attention_kwargs=None,
         class_labels=None,
     ):
+        """
+        hidden_states: [b*n*f, channel, height, width], where n=num_cams, f=frames
+        """
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 1. Self-Attention
         if self.use_ada_layer_norm:
@@ -208,6 +228,17 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             )
             hidden_states = attn_output + hidden_states
 
+        # S-T Attention
+        norm_hidden_states = self.norm5(hidden_states)
+        # norm_hidden_states = rearrange(norm_hidden_states,
+        #                                '(b n f) ... -> (b n) f ...',
+        #                                f=self.frames)
+        attn_output = self.attn5(norm_hidden_states,
+                                 encoder_hidden_states=encoder_hidden_states
+                                 if self.only_cross_attention else None,
+                                 video_length=self.frames)
+        hidden_states = attn_output + hidden_states
+
         # multi-view cross attention
         norm_hidden_states = (self.norm4(hidden_states, timestep)
                               if self.use_ada_layer_norm else
@@ -242,6 +273,17 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
         # apply zero init connector (one layer)
         attn_output = self.connector(attn_output)
         # short-cut
+        hidden_states = attn_output + hidden_states
+
+        # temporal attention
+        norm_hidden_states = (self.norm6(hidden_states, timestep)
+                              if self.use_ada_layer_norm else
+                              self.norm6(hidden_states))
+        norm_hidden_states = rearrange(norm_hidden_states,
+                                       "(b f) ... -> b f ...",
+                                       f=self.frames)
+        attn_output = self.attn6(norm_hidden_states)
+        attn_output = rearrange(attn_output, 'b f ... -> (b f) ...')
         hidden_states = attn_output + hidden_states
 
         # 3. Feed-forward
