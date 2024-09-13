@@ -100,3 +100,52 @@ class DatasetFromCSV(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.scene_names)
+
+
+class PreprocessedDatasetFromCSV(torch.utils.data.Dataset):
+
+    def __init__(self,
+                 csv_path,
+                 num_frames=None,
+                 root=None,
+                 preprocessed_dir=None):
+
+        self.csv_path = csv_path
+        if (not os.path.exists(csv_path)) and (root is not None):
+            self.csv_path = os.path.join(root, csv_path)
+
+        self.preprocessed_dir = preprocessed_dir
+        if (not os.path.exists(preprocessed_dir)) and (root is not None):
+            # relative dir => absolute dir
+            self.preprocessed_dir = os.path.join(root, preprocessed_dir)
+
+        self.num_frames = num_frames
+
+        self.df = pd.read_csv(self.csv_path)
+        self.scene_col = self.df.columns[0]
+        self.scene_names = self.df[self.scene_col].unique()
+
+    def getitem(self, index):
+        t0 = time.time()
+        # corresponds to the "video_id" in DatasetFromCSV output
+        video_id = self.scene_names[index]
+
+        preprocessed_data_path = os.path.join(self.preprocessed_dir,
+                                              f"{video_id}.pt")
+        data = torch.load(preprocessed_data_path)
+        if self.num_frames is not None:
+            data['x'] = data['x'][:, :self.num_frames]
+
+        return data
+
+    def __getitem__(self, index):
+        for _ in range(5):
+            try:
+                return self.getitem(index)
+            except Exception as e:
+                print(e)
+                index = np.random.randint(len(self))
+        raise RuntimeError("Too many bad data.")
+
+    def __len__(self):
+        return len(self.scene_names)
