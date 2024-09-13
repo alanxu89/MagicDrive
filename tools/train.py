@@ -22,6 +22,15 @@ import magicdrive.dataset.pipeline
 from magicdrive.misc.common import load_module
 
 
+def build_dataset(cfg, default_args=None):
+    from mmengine.registry import build_from_cfg
+    from mmdet.datasets import DATASETS
+
+    dataset = build_from_cfg(cfg, DATASETS, default_args)
+
+    return dataset
+
+
 def set_logger(global_rank, logdir):
     if global_rank == 0:  # already set for main process
         return
@@ -30,8 +39,7 @@ def set_logger(global_rank, logdir):
     root.handlers.clear()  # we reset logger for other processes
     root.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
-        "[%(asctime)s][%(name)s][%(levelname)s] - %(message)s"
-    )
+        "[%(asctime)s][%(name)s][%(levelname)s] - %(message)s")
     # to logger
     file_path = os.path.join(logdir, f"train.{global_rank}.log")
     handler = logging.FileHandler(file_path)
@@ -69,7 +77,8 @@ def main(cfg: DictConfig):
     # since our model has randomness to train the uncond embedding, we need this.
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
-        gradient_accumulation_steps=cfg.accelerator.gradient_accumulation_steps,
+        gradient_accumulation_steps=cfg.accelerator.
+        gradient_accumulation_steps,
         mixed_precision=cfg.accelerator.mixed_precision,
         log_with=cfg.accelerator.report_to,
         project_dir=cfg.log_root,
@@ -79,12 +88,14 @@ def main(cfg: DictConfig):
     set_seed(cfg.seed)
 
     # datasets
-    train_dataset = build_dataset(
-        OmegaConf.to_container(cfg.dataset.data.train, resolve=True)
-    )
-    val_dataset = build_dataset(
-        OmegaConf.to_container(cfg.dataset.data.val, resolve=True)
-    )
+    # train_dataset = build_dataset(
+    #     OmegaConf.to_container(cfg.dataset.data.train, resolve=True)
+    # )
+    # val_dataset = build_dataset(
+    #     OmegaConf.to_container(cfg.dataset.data.val, resolve=True)
+    # )
+    train_dataset = None
+    val_dataset = None
 
     # runner
     if cfg.resume_from_checkpoint and cfg.resume_from_checkpoint.endswith("/"):
