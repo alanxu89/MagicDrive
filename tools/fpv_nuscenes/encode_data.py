@@ -262,22 +262,22 @@ def main():
             global_step = epoch * num_steps_per_epoch + step
 
             # step
-            print("step ", step)
             batch = next(dataloader_iter)
 
-            print("got batch")
-            x = batch["video"].to(device, dtype)  # [B, C, T, N, H, W]
+            x = batch["rgb"].to(device, dtype)  # [B, C, T, N, H, W]
+            depth = batch["depth"].to(dtype)
+            semantic_map = batch["semantic_map"].to(dtype)
             y = batch[cfg.text_key]
             video_ids = batch["video_id"]
 
             # video and text encoding
             with torch.no_grad():
-                x = rearrange(x, "B C T N M H W -> B C (T N M) H W")
+                # here we only encode rgb data with VAE
+                x = rearrange(x, "B C T N H W -> B C (T N) H W")
                 x = vae.encode(x)
                 x = rearrange(x,
-                              "B C (T N M) H W -> B C T N M H W",
-                              N=dataset.n_cams,
-                              M=dataset.n_modes)
+                              "B C (T N) H W -> B C T N H W",
+                              N=dataset.n_cams)
                 model_args = text_encoder.encode(y)
 
                 # if encode only, we save results to file
@@ -288,12 +288,13 @@ def main():
                             save_fpath) or cfg.override_preprocessed:
                         saved_data = {
                             "x": x[idx].cpu(),
+                            "depth": depth[idx].cpu(),
+                            "semantic_map": semantic_map[idx].cpu(),
                             "y": model_args["y"][idx].cpu(),
                             "mask": model_args["mask"][idx].cpu(),
                             "video_id": vid,
                         }
                         torch.save(saved_data, save_fpath)
-            break
 
     print("Done!")
     dist.destroy_process_group()
