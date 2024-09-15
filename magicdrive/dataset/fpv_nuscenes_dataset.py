@@ -84,7 +84,9 @@ class DatasetFromCSV(torch.utils.data.Dataset):
         all_data = all_data.permute(3, 0, 1, 2, 4, 5)  # [C, T, N, M, H, W]
 
         return {
-            "video": all_data,
+            "rgb": all_data[:, :, :, 2],
+            "semantic_map": all_data[:, :, :, 1],
+            "depth": all_data[:, :, :, 0],
             "text": scene_description,
             "video_id": scene_name,
         }
