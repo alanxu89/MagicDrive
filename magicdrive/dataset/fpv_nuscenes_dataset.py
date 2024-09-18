@@ -58,6 +58,7 @@ class DatasetFromCSV(torch.utils.data.Dataset):
         scene_df = self.df[self.df[self.scene_col] == scene_name].sort_values(
             by=[self.timestamp_col, self.camera_col, self.mode_col])
         scene_description = scene_df[self.description_col].iloc[0]
+        scene_location = scene_df[self.location_col].iloc[0]
 
         all_files = scene_df[self.filepath_col]
         all_data = read_image_files_into_array(all_files, self.root,
@@ -83,11 +84,12 @@ class DatasetFromCSV(torch.utils.data.Dataset):
 
         all_data = all_data.permute(3, 0, 1, 2, 4, 5)  # [C, T, N, M, H, W]
 
+        text_prompt = scene_description + " in " + scene_location
         return {
-            "rgb": all_data[:, :, :, 2],
-            "semantic_map": all_data[:, :, :, 1],
-            "depth": all_data[:, :, :, 0],
-            "text": scene_description,
+            "rgb": all_data[:, :, :, 2],  # [C, T, N, H, W]
+            "semantic_map": all_data[:, :, :, 1],  # [C, T, N, H, W]
+            "depth": all_data[:, :, :, 0],  # [C, T, N, H, W]
+            "text": text_prompt,
             "video_id": scene_name,
         }
 
