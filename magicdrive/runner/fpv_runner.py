@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import contextlib
 from omegaconf import OmegaConf
 
@@ -40,31 +41,32 @@ class ControlnetUnetWrapper(ModelMixin):
         self.weight_dtype = weight_dtype
         self.unet_in_fp16 = unet_in_fp16
 
-    def forward(self, noisy_latents, timesteps, camera_param,
-                encoder_hidden_states, encoder_hidden_states_uncond,
-                controlnet_image, **kwargs):
-        N_cam = noisy_latents.shape[1]
+    def forward(self, noisy_latents, timesteps, encoder_hidden_states,
+                encoder_hidden_states_uncond, controlnet_images, **kwargs):
+        """
+        noisy_latents: [b*t*n, c, h, w]
+        """
         kwargs = move_to(kwargs, self.weight_dtype,
                          lambda x: x.dtype == torch.float32)
 
         # fmt: off
         down_block_res_samples, mid_block_res_sample, \
         encoder_hidden_states_with_cam = self.controlnet(
-            noisy_latents,  # b, N_cam, 4, H/8, W/8
+            noisy_latents,  # b*t*n, 4, H/8, W/8
             timesteps,  # b
-            camera_param=camera_param,  # b, N_cam, 189
             encoder_hidden_states=encoder_hidden_states,  # b, len, 768
             encoder_hidden_states_uncond=encoder_hidden_states_uncond,  # 1, len, 768
-            controlnet_cond=controlnet_image,  # b, 26, 200, 200
+            controlnet_cond=controlnet_images,  # List[Tensor(b, c, h, w)]
+            conditioning_scale=1.0,
             return_dict=False,
             **kwargs,
         )
         # fmt: on
 
         # starting from here, we use (B n) as batch_size
-        noisy_latents = rearrange(noisy_latents, "b n ... -> (b n) ...")
-        if timesteps.ndim == 1:
-            timesteps = repeat(timesteps, "b -> (b n)", n=N_cam)
+        # noisy_latents = rearrange(noisy_latents, "b n ... -> (b n) ...")
+        # if timesteps.ndim == 1:
+        #     timesteps = repeat(timesteps, "b -> (b n)", n=N_cam)
 
         # Predict the noise residual
         # NOTE: Since we fix most of the model, we cast the model to fp16 and
@@ -77,7 +79,7 @@ class ControlnetUnetWrapper(ModelMixin):
             context_kwargs = {"enabled": False}
         with context(**context_kwargs):
             model_pred = self.unet(
-                noisy_latents,  # b x n, 4, H/8, W/8
+                noisy_latents,  # b*t*n, 4, H/8, W/8
                 timesteps.reshape(-1),  # b x n
                 encoder_hidden_states=encoder_hidden_states_with_cam.to(
                     dtype=self.weight_dtype),  # b x n, len + 1, 768
@@ -91,7 +93,7 @@ class ControlnetUnetWrapper(ModelMixin):
                 ),  # b x n, 1280, h, w. we have 4 x 7 as mid_block_res
             ).sample
 
-        model_pred = rearrange(model_pred, "(b n) ... -> b n ...", n=N_cam)
+        # model_pred = rearrange(model_pred, "(b n) ... -> b n ...", n=N_cam)
         return model_pred
 
 
@@ -253,28 +255,30 @@ class FPVRunner(BaseRunner):
     def _train_one_stop(self, batch):
         self.controlnet_unet.train()
         with self.accelerator.accumulate(self.controlnet_unet):
-            N_cam = batch["pixel_values"].shape[1]
+            rgb = batch["rgb"]
+            bsz, N_frame, N_cam = rgb.shape[:3]
 
             # Convert images to latent space
             latents = self.vae.encode(
-                rearrange(batch["pixel_values"],
-                          "b n c h w -> (b n) c h w").to(
-                              dtype=self.weight_dtype)).latent_dist.sample()
+                rearrange(rgb, "b c t n h w -> (b t n) c h w").to(
+                    dtype=self.weight_dtype)).latent_dist.sample()
             latents = latents * self.vae.config.scaling_factor
-            latents = rearrange(latents, "(b n) c h w -> b n c h w", n=N_cam)
-
-            # embed camera params, in (B, 6, 3, 7), out (B, 6, 189)
-            # camera_emb = self._embed_camera(batch["camera_param"])
-            camera_param = batch["camera_param"].to(self.weight_dtype)
+            # latents = rearrange(latents,
+            #                     "(b t n) c h w -> b t n c h w",
+            #                     t=N_frame,
+            #                     n=N_cam)
 
             # Sample noise that we'll add to the latents
             noise = torch.randn_like(latents)
             # make sure we use same noise for different views, only take the
             # first
             if self.cfg.model.train_with_same_noise:
-                noise = repeat(noise[:, 0], "b ... -> b r ...", r=N_cam)
+                # different t and n share the same noise
+                noise = repeat(noise[::N_frame * N_cam],
+                               "b ... -> b r1 r2 ...",
+                               r1=N_frame, r2=N_cam)
 
-            bsz = latents.shape[0]
+            expanded_bsz = latents.shape[0]
             # Sample a random timestep for each image
             if self.cfg.model.train_with_same_t:
                 timesteps = torch.randint(
@@ -284,15 +288,12 @@ class FPVRunner(BaseRunner):
                     device=latents.device,
                 )
             else:
-                timesteps = torch.stack([
-                    torch.randint(
-                        0,
-                        self.noise_scheduler.config.num_train_timesteps,
-                        (bsz, ),
-                        device=latents.device,
-                    ) for _ in range(N_cam)
-                ],
-                                        dim=1)
+                timesteps = torch.randint(
+                    0,
+                    self.noise_scheduler.config.num_train_timesteps,
+                    (expanded_bsz, ),
+                    device=latents.device,
+                )
             timesteps = timesteps.long()
 
             # Add noise to the latents according to the noise magnitude at each timestep
@@ -304,16 +305,17 @@ class FPVRunner(BaseRunner):
             encoder_hidden_states_uncond = self.text_encoder(
                 batch["uncond_ids"])[0]
 
-            controlnet_image = batch["bev_map_with_aux"].to(
-                dtype=self.weight_dtype)
+            controlnet_images = [
+                batch["depth"].to(dtype=self.weight_dtype),
+                batch["semantic_map"].to(dtype=self.weight_dtype)
+            ]
 
             model_pred = self.controlnet_unet(
                 noisy_latents,
                 timesteps,
-                camera_param,
                 encoder_hidden_states,
                 encoder_hidden_states_uncond,
-                controlnet_image,
+                controlnet_images,
                 **batch['kwargs'],
             )
 
