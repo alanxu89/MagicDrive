@@ -42,7 +42,7 @@ class ControlnetUnetWrapper(ModelMixin):
         self.unet_in_fp16 = unet_in_fp16
 
     def forward(self, noisy_latents, timesteps, encoder_hidden_states,
-                encoder_hidden_states_uncond, controlnet_images, **kwargs):
+                controlnet_images, **kwargs):
         """
         noisy_latents: [b*t*n, c, h, w]
         """
@@ -50,14 +50,17 @@ class ControlnetUnetWrapper(ModelMixin):
                          lambda x: x.dtype == torch.float32)
 
         # fmt: off
+        print(f"input shapes: {noisy_latents.shape}, {timesteps.shape}, {encoder_hidden_states.shape}")
+        for img in controlnet_images:
+            print(img.shape)
         down_block_res_samples, mid_block_res_sample, \
         encoder_hidden_states_with_cam = self.controlnet(
             noisy_latents,  # b*t*n, 4, H/8, W/8
             timesteps,  # b
             encoder_hidden_states=encoder_hidden_states,  # b, len, 768
-            encoder_hidden_states_uncond=encoder_hidden_states_uncond,  # 1, len, 768
+            # encoder_hidden_states_uncond=encoder_hidden_states_uncond,  # 1, len, 768
             controlnet_cond=controlnet_images,  # List[Tensor(b, c, h, w)]
-            conditioning_scale=1.0,
+            conditioning_scale=[1.0]*len(controlnet_images),
             return_dict=False,
             **kwargs,
         )
@@ -120,12 +123,12 @@ class FPVRunner(BaseRunner):
         self.unet = model_cls.from_unet_2d_condition(unet, **unet_param)
 
         # MultiControlNetModel
-        controlnets = dict()
+        controlnets = []
         controlnets_param = OmegaConf.to_container(self.cfg.model.controlnets,
                                                    resolve=True)
-        for key, val in controlnets_param.items():
-            ctrl_net_module = load_module(val)
-            controlnets[key] = ctrl_net_module.from_unet(unet)
+        for controlnet_param in controlnets_param:
+            ctrl_net_module = load_module(controlnet_param['module'])
+            controlnets.append(ctrl_net_module.from_unet(unet))
         self.controlnet = MultiControlNetModel(controlnets=controlnets)
 
     def _set_model_trainable_state(self, train=True):
@@ -231,12 +234,6 @@ class FPVRunner(BaseRunner):
         controlnet_unet.weight_dtype = self.weight_dtype
         controlnet_unet.unet_in_fp16 = self.cfg.runner.unet_in_fp16
 
-        with torch.no_grad():
-            self.accelerator.unwrap_model(self.controlnet).prepare(
-                self.cfg,
-                tokenizer=self.tokenizer,
-                text_encoder=self.text_encoder)
-
         # We need to recalculate our total training steps as the size of the
         # training dataloader may have changed.
         self._calculate_steps()
@@ -255,8 +252,9 @@ class FPVRunner(BaseRunner):
     def _train_one_stop(self, batch):
         self.controlnet_unet.train()
         with self.accelerator.accumulate(self.controlnet_unet):
-            rgb = batch["rgb"]
+            rgb = batch["pixel_values"]
             bsz, N_frame, N_cam = rgb.shape[:3]
+            print(f"rgb shape {rgb.shape}")
 
             # Convert images to latent space
             latents = self.vae.encode(
@@ -276,7 +274,8 @@ class FPVRunner(BaseRunner):
                 # different t and n share the same noise
                 noise = repeat(noise[::N_frame * N_cam],
                                "b ... -> b r1 r2 ...",
-                               r1=N_frame, r2=N_cam)
+                               r1=N_frame,
+                               r2=N_cam)
 
             expanded_bsz = latents.shape[0]
             # Sample a random timestep for each image
@@ -284,9 +283,10 @@ class FPVRunner(BaseRunner):
                 timesteps = torch.randint(
                     0,
                     self.noise_scheduler.config.num_train_timesteps,
-                    (bsz, ),
+                    (bsz, 1, 1),
                     device=latents.device,
                 )
+                timesteps = timesteps.repeat(1, N_frame, N_cam).flatten()
             else:
                 timesteps = torch.randint(
                     0,
@@ -296,25 +296,40 @@ class FPVRunner(BaseRunner):
                 )
             timesteps = timesteps.long()
 
+            print(
+                f"latents shape: {latents.shape}, noise shape: {noise.shape}, timesteps shape: {timesteps.shape}"
+            )
+
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
             noisy_latents = self._add_noise(latents, noise, timesteps)
 
+            input_ids = batch["input_ids"]
+            print(f"input_ids shape {input_ids.shape}")
             # Get the text embedding for conditioning
             encoder_hidden_states = self.text_encoder(batch["input_ids"])[0]
+            bs, seq_len, n_hidden = encoder_hidden_states.shape
+            encoder_hidden_states = encoder_hidden_states.unsqueeze(
+                1).unsqueeze(1)
+            encoder_hidden_states = encoder_hidden_states.expand(
+                -1, N_frame, N_cam, -1, -1)
+            encoder_hidden_states = encoder_hidden_states.reshape(
+                bs * N_frame * N_cam, seq_len, n_hidden)
             encoder_hidden_states_uncond = self.text_encoder(
                 batch["uncond_ids"])[0]
+            print(f"encoder_hidden_states shape {encoder_hidden_states.shape}")
 
-            controlnet_images = [
-                batch["depth"].to(dtype=self.weight_dtype),
-                batch["semantic_map"].to(dtype=self.weight_dtype)
-            ]
+            cond1 = batch["depth"].to(dtype=self.weight_dtype)
+            cond1 = cond1.reshape(-1, *cond1.shape[-3:])
+            cond2 = batch["depth"].to(dtype=self.weight_dtype)
+            cond2 = cond2.reshape(-1, *cond2.shape[-3:])
+            controlnet_images = [cond1, cond2]
 
             model_pred = self.controlnet_unet(
                 noisy_latents,
                 timesteps,
                 encoder_hidden_states,
-                encoder_hidden_states_uncond,
+                # encoder_hidden_states_uncond,
                 controlnet_images,
                 **batch['kwargs'],
             )

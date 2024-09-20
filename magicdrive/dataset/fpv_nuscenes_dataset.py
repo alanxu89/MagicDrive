@@ -91,6 +91,10 @@ class DatasetFromCSV(torch.utils.data.Dataset):
             "depth": all_data[:, :, :, 0],  # [C, T, N, H, W]
             "text": text_prompt,
             "video_id": scene_name,
+            "metas": {
+                "location": scene_location,
+                "description": scene_description,
+            }
         }
 
     def __getitem__(self, index):

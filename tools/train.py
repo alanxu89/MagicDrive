@@ -5,8 +5,9 @@ import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import torch
+from torchvision import transforms
 
-from mmdet3d.datasets import build_dataset
+# from mmdet3d.datasets import build_dataset
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import set_seed
 
@@ -18,15 +19,55 @@ warnings.filterwarnings("ignore", category=ShapelyDeprecationWarning)
 # fmt: on
 
 sys.path.append(".")  # noqa
-import magicdrive.dataset.pipeline
+# import magicdrive.dataset.pipeline
 from magicdrive.misc.common import load_module
 
+sys.path.append("./magicdrive/dataset/")  # noqa
+from fpv_nuscenes_dataset import DatasetFromCSV
 
-def build_dataset(cfg, default_args=None):
-    from mmengine.registry import build_from_cfg
-    from mmdet.datasets import DATASETS
 
-    dataset = build_from_cfg(cfg, DATASETS, default_args)
+class ToTensorVideo:
+    """
+    Convert tensor data type from uint8 to float, divide value by 255.0 and
+    permute the dimensions of clip tensor
+    """
+
+    def __init__(self):
+        pass
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor, dtype=torch.uint8): Size is (T, C, H, W)
+        Return:
+            clip (torch.tensor, dtype=torch.float): Size is (T, C, H, W)
+        """
+        if not clip.dtype == torch.uint8:
+            raise TypeError("clip tensor should have data type uint8. Got %s" %
+                            str(clip.dtype))
+        # return clip.float().permute(3, 0, 1, 2) / 255.0
+        return clip.float() / 255.0
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+
+
+def build_dataset(cfg):
+    video_trans = transforms.Compose([
+        ToTensorVideo(),
+        # RandomHorizontalFlipVideo(),
+        # UCFCenterCropVideo(resolution),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                             std=[0.5, 0.5, 0.5],
+                             inplace=True),
+    ])
+
+    dataset = DatasetFromCSV(cfg["data_path"],
+                             num_frames=cfg["num_frames"],
+                             frame_interval=cfg["frame_interval"],
+                             transform=video_trans,
+                             img_size=cfg["image_size"],
+                             root=cfg["dataset_root"])
 
     return dataset
 
@@ -88,14 +129,10 @@ def main(cfg: DictConfig):
     set_seed(cfg.seed)
 
     # datasets
-    # train_dataset = build_dataset(
-    #     OmegaConf.to_container(cfg.dataset.data.train, resolve=True)
-    # )
-    # val_dataset = build_dataset(
-    #     OmegaConf.to_container(cfg.dataset.data.val, resolve=True)
-    # )
-    train_dataset = None
-    val_dataset = None
+    train_dataset = build_dataset(
+        OmegaConf.to_container(cfg.dataset.data.train, resolve=True))
+    val_dataset = build_dataset(
+        OmegaConf.to_container(cfg.dataset.data.val, resolve=True))
 
     # runner
     if cfg.resume_from_checkpoint and cfg.resume_from_checkpoint.endswith("/"):

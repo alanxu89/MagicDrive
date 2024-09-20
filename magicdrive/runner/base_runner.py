@@ -22,7 +22,7 @@ from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 from transformers.utils import ContextManagers
 from accelerate import Accelerator
 
-from magicdrive.dataset.utils import collate_fn
+from magicdrive.dataset.utils import collate_fn_v2
 from magicdrive.runner.base_validator import BaseValidator
 from magicdrive.runner.utils import (
     prepare_ckpt,
@@ -37,6 +37,7 @@ from magicdrive.misc.common import (
 
 
 class BaseRunner:
+
     def __init__(self, cfg, accelerator, train_set, val_set) -> None:
         self.cfg = cfg
         self.accelerator: Accelerator = accelerator
@@ -61,16 +62,14 @@ class BaseRunner:
 
         # validator
         pipe_cls = load_module(cfg.model.pipe_module)
-        self.validator = BaseValidator(
-            self.cfg,
-            self.val_dataset,
-            pipe_cls,
-            pipe_param={
-                "vae": self.vae,
-                "text_encoder": self.text_encoder,
-                "tokenizer": self.tokenizer,
-            }
-        )
+        self.validator = BaseValidator(self.cfg,
+                                       self.val_dataset,
+                                       pipe_cls,
+                                       pipe_param={
+                                           "vae": self.vae,
+                                           "text_encoder": self.text_encoder,
+                                           "tokenizer": self.tokenizer,
+                                       })
 
         # param and placeholders
         self.weight_dtype = torch.float32
@@ -90,8 +89,8 @@ class BaseRunner:
 
     def _init_trainable_models(self, cfg):
         model_cls = load_module(cfg.model.model_module)
-        controlnet_param = OmegaConf.to_container(
-            self.cfg.model.controlnet, resolve=True)
+        controlnet_param = OmegaConf.to_container(self.cfg.model.controlnet,
+                                                  resolve=True)
         self.controlnet = model_cls.from_unet(self.unet, **controlnet_param)
 
     def _calculate_steps(self):
@@ -99,37 +98,37 @@ class BaseRunner:
             return  # there is no train dataloader, no need to set anything
 
         self.num_update_steps_per_epoch = math.ceil(
-            len(self.train_dataloader) / self.cfg.runner.gradient_accumulation_steps
-        )
+            len(self.train_dataloader) /
+            self.cfg.runner.gradient_accumulation_steps)
         # here the logic takes steps as higher priority. once set, will override
         # epochs param
         if self.overrode_max_train_steps:
             self.cfg.runner.max_train_steps = (
-                self.cfg.runner.num_train_epochs * self.num_update_steps_per_epoch
-            )
+                self.cfg.runner.num_train_epochs *
+                self.num_update_steps_per_epoch)
         else:
             # make sure steps and epochs are consistent
             self.cfg.runner.num_train_epochs = math.ceil(
-                self.cfg.runner.max_train_steps / self.num_update_steps_per_epoch
-            )
+                self.cfg.runner.max_train_steps /
+                self.num_update_steps_per_epoch)
 
     def _set_dataset_loader(self):
         # dataset
         collate_fn_param = {
             "tokenizer": self.tokenizer,
             "template": self.cfg.dataset.template,
-            "bbox_mode": self.cfg.model.bbox_mode,
-            "bbox_view_shared": self.cfg.model.bbox_view_shared,
-            "bbox_drop_ratio": self.cfg.runner.bbox_drop_ratio,
-            "bbox_add_ratio": self.cfg.runner.bbox_add_ratio,
-            "bbox_add_num": self.cfg.runner.bbox_add_num,
+            # "bbox_mode": self.cfg.model.bbox_mode,
+            # "bbox_view_shared": self.cfg.model.bbox_view_shared,
+            # "bbox_drop_ratio": self.cfg.runner.bbox_drop_ratio,
+            # "bbox_add_ratio": self.cfg.runner.bbox_add_ratio,
+            # "bbox_add_num": self.cfg.runner.bbox_add_num,
         }
 
         if self.train_dataset is not None:
             self.train_dataloader = torch.utils.data.DataLoader(
                 self.train_dataset, shuffle=True,
                 collate_fn=partial(
-                    collate_fn, is_train=True, **collate_fn_param),
+                    collate_fn_v2, is_train=True, **collate_fn_param),
                 batch_size=self.cfg.runner.train_batch_size,
                 num_workers=self.cfg.runner.num_workers, pin_memory=True,
                 prefetch_factor=self.cfg.runner.prefetch_factor,
@@ -139,7 +138,7 @@ class BaseRunner:
             self.val_dataloader = torch.utils.data.DataLoader(
                 self.val_dataset, shuffle=False,
                 collate_fn=partial(
-                    collate_fn, is_train=False, **collate_fn_param),
+                    collate_fn_v2, is_train=False, **collate_fn_param),
                 batch_size=self.cfg.runner.validation_batch_size,
                 num_workers=self.cfg.runner.num_workers,
                 prefetch_factor=self.cfg.runner.prefetch_factor,
