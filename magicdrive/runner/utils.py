@@ -7,7 +7,7 @@ import torch
 from accelerate.scheduler import AcceleratedScheduler
 
 from magicdrive.runner.map_visualizer import *
-from magicdrive.runner.box_visualizer import *
+# from magicdrive.runner.box_visualizer import *
 from magicdrive.runner.img_utils import *
 
 
