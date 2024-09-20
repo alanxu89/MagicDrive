@@ -1,7 +1,7 @@
 defaults:
   - _self_
-  - model: SDv1.5mv_rawbox
-  - dataset: Nuscenes_cache
+  - model: SDv1.5_fpv
+  - dataset: Nuscenes_fpv
   - accelerator: default
   - runner: default
 

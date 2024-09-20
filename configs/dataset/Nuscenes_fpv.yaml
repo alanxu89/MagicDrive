@@ -1,0 +1,63 @@
+dataset_type: NuScenesDatasetM
+dataset_root: /home/ubuntu/Documents/ml_data/nuscenes_data
+data_path: data.csv
+num_frames: 16
+frame_interval: 2
+dataset_process_root: data/nuscenes_mmdet3d_2/  # with visibility
+dataset_cache_file_tag: null
+dataset_cache_file:
+  - null  # for train_pipeline
+  - null  # for test_pipeline
+
+template: A driving scene image at {location}. {description}.
+
+# point_cloud_range: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+# voxel_size: [0.1, 0.1, 0.2]
+# image_size: [256, 704]  # size of devfusion
+image_size: [224, 400]
+
+view_order:
+  - "CAM_FRONT_LEFT"
+  - "CAM_FRONT"
+  - "CAM_FRONT_RIGHT"
+  # - "CAM_BACK_RIGHT"
+  # - "CAM_BACK"
+  # - "CAM_BACK_LEFT"
+
+neighboring_view_pair:
+  0: [2, 1]
+  1: [0, 2]
+  2: [1, 0]
+  # 3: [2, 4]
+  # 4: [3, 5]
+  # 5: [4, 0]
+
+
+
+data:
+  # samples_per_gpu: 4  # we do not set these here.
+  # workers_per_gpu: 4
+  train:  # here we drop the wrapper of CBGSDataset
+    type: ${...dataset_type}
+    dataset_root: ${...dataset_root}
+    test_mode: false
+    data_path: ${...data_path}
+    num_frames: ${...num_frames}
+    frame_interval: ${...frame_interval}
+    image_size: ${...image_size}
+  val:
+    type: ${...dataset_type}
+    dataset_root: ${...dataset_root}
+    test_mode: false
+    data_path: ${...data_path}
+    num_frames: ${...num_frames}
+    frame_interval: ${...frame_interval}
+    image_size: ${...image_size}
+  test:
+    type: ${...dataset_type}
+    dataset_root: ${...dataset_root}
+    test_mode: false
+    data_path: ${...data_path}
+    num_frames: ${...num_frames}
+    frame_interval: ${...frame_interval}
+    image_size: ${...image_size}
