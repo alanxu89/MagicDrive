@@ -11,20 +11,27 @@ import numpy as np
 import torch
 from torchvision.transforms.functional import to_pil_image
 
-from mmdet3d.datasets import build_dataset
+# from mmdet3d.datasets import build_dataset
 from diffusers import UniPCMultistepScheduler
 import accelerate
 from accelerate.utils import set_seed
 
-from magicdrive.dataset import collate_fn, ListSetWrapper, FolderSetWrapper
+from magicdrive.dataset import collate_fn, ListSetWrapper
 from magicdrive.pipeline.pipeline_bev_controlnet import (
     StableDiffusionBEVControlNetPipeline,
     BEVStableDiffusionPipelineOutput,
 )
-from magicdrive.runner.utils import (
-    visualize_map, img_m11_to_01, show_box_on_views
-)
+from magicdrive.runner.utils import (visualize_map, img_m11_to_01)
 from magicdrive.misc.common import load_module
+
+
+def build_dataset(cfg, default_args=None):
+    from mmengine.registry import build_from_cfg
+    from mmdet.datasets import DATASETS
+
+    dataset = build_from_cfg(cfg, DATASETS, default_args)
+
+    return dataset
 
 
 def insert_pipeline_item(cfg: DictConfig, search_type, item=None) -> None:
@@ -42,7 +49,11 @@ def insert_pipeline_item(cfg: DictConfig, search_type, item=None) -> None:
     cfg.merge_with(ori_cfg)
 
 
-def draw_box_on_imgs(cfg, idx, val_input, ori_imgs, transparent_bg=False) -> Tuple[Image.Image, ...]:
+def draw_box_on_imgs(cfg,
+                     idx,
+                     val_input,
+                     ori_imgs,
+                     transparent_bg=False) -> Tuple[Image.Image, ...]:
     if transparent_bg:
         in_imgs = [Image.new('RGB', img.size) for img in ori_imgs]
     else:
@@ -57,8 +68,9 @@ def draw_box_on_imgs(cfg, idx, val_input, ori_imgs, transparent_bg=False) -> Tup
     )
     if transparent_bg:
         for i in range(len(out_imgs)):
-            out_imgs[i].putalpha(Image.fromarray(
-                (np.any(np.asarray(out_imgs[i]) > 0, axis=2) * 255).astype(np.uint8)))
+            out_imgs[i].putalpha(
+                Image.fromarray((np.any(np.asarray(out_imgs[i]) > 0, axis=2) *
+                                 255).astype(np.uint8)))
     return out_imgs
 
 
@@ -98,20 +110,20 @@ def build_pipe(cfg, device):
     pipe_param = {}
 
     model_cls = load_module(cfg.model.model_module)
-    controlnet_path = os.path.join(
-        cfg.resume_from_checkpoint, cfg.model.controlnet_dir)
+    controlnet_path = os.path.join(cfg.resume_from_checkpoint,
+                                   cfg.model.controlnet_dir)
     logging.info(f"Loading controlnet from {controlnet_path} with {model_cls}")
-    controlnet = model_cls.from_pretrained(
-        controlnet_path, torch_dtype=weight_dtype)
+    controlnet = model_cls.from_pretrained(controlnet_path,
+                                           torch_dtype=weight_dtype)
     controlnet.eval()  # from_pretrained will set to eval mode by default
     pipe_param["controlnet"] = controlnet
 
     if hasattr(cfg.model, "unet_module"):
         unet_cls = load_module(cfg.model.unet_module)
-        unet_path = os.path.join(cfg.resume_from_checkpoint, cfg.model.unet_dir)
+        unet_path = os.path.join(cfg.resume_from_checkpoint,
+                                 cfg.model.unet_dir)
         logging.info(f"Loading unet from {unet_path} with {unet_cls}")
-        unet = unet_cls.from_pretrained(
-            unet_path, torch_dtype=weight_dtype)
+        unet = unet_cls.from_pretrained(unet_path, torch_dtype=weight_dtype)
         unet.eval()
         pipe_param["unet"] = unet
 
@@ -122,8 +134,7 @@ def build_pipe(cfg, device):
         **pipe_param,
         safety_checker=None,
         feature_extractor=None,  # since v1.5 has default, we need to override
-        torch_dtype=weight_dtype
-    )
+        torch_dtype=weight_dtype)
 
     # speed up diffusion process with faster scheduler and memory optimization
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
@@ -152,14 +163,14 @@ def prepare_all(cfg, device='cuda', need_loader=True):
     #### datasets ####
 
     if cfg.runner.validation_index == "demo":
-        val_dataset = FolderSetWrapper("demo/data")
+        # val_dataset = FolderSetWrapper("demo/data")
+        pass
     else:
         val_dataset = build_dataset(
-            OmegaConf.to_container(cfg.dataset.data.val, resolve=True)
-        )
+            OmegaConf.to_container(cfg.dataset.data.val, resolve=True))
         if cfg.runner.validation_index != "all":
-            val_dataset = ListSetWrapper(
-                val_dataset, cfg.runner.validation_index)
+            val_dataset = ListSetWrapper(val_dataset,
+                                         cfg.runner.validation_index)
 
     #### dataloader ####
     collate_fn_param = {
@@ -182,22 +193,21 @@ def prepare_all(cfg, device='cuda', need_loader=True):
 
 
 def new_local_seed(global_generator):
-    local_seed = torch.randint(
-        0x7ffffffffffffff0, [1], generator=global_generator).item()
+    local_seed = torch.randint(0x7ffffffffffffff0, [1],
+                               generator=global_generator).item()
     logging.debug(f"Using seed: {local_seed}")
     return local_seed
 
 
 def run_one_batch_pipe(
-    cfg,
-    pipe: StableDiffusionBEVControlNetPipeline,
-    pixel_values: torch.FloatTensor,  # useless
-    captions: Union[str, List[str]],
-    bev_map_with_aux: torch.FloatTensor,
-    camera_param: Union[torch.Tensor, None],
-    bev_controlnet_kwargs: dict,
-    global_generator=None
-):
+        cfg,
+        pipe: StableDiffusionBEVControlNetPipeline,
+        pixel_values: torch.FloatTensor,  # useless
+        captions: Union[str, List[str]],
+        bev_map_with_aux: torch.FloatTensor,
+        camera_param: Union[torch.Tensor, None],
+        bev_controlnet_kwargs: dict,
+        global_generator=None):
     """call pipe several times to generate images
 
     Args:
@@ -232,8 +242,9 @@ def run_one_batch_pipe(
                 generator = torch.manual_seed(local_seed)
         else:
             if cfg.fix_seed_within_batch:
-                generator = [torch.manual_seed(cfg.seed)
-                             for _ in range(batch_size)]
+                generator = [
+                    torch.manual_seed(cfg.seed) for _ in range(batch_size)
+                ]
             else:
                 generator = torch.manual_seed(cfg.seed)
 
@@ -255,9 +266,14 @@ def run_one_batch_pipe(
     return gen_imgs_list
 
 
-def run_one_batch(cfg, pipe, val_input, weight_dtype, global_generator=None,
+def run_one_batch(cfg,
+                  pipe,
+                  val_input,
+                  weight_dtype,
+                  global_generator=None,
                   run_one_batch_pipe_func=run_one_batch_pipe,
-                  transparent_bg=False, map_size=400):
+                  transparent_bg=False,
+                  map_size=400):
     """Run one batch of data according to your configuration
 
     Returns:
@@ -285,16 +301,16 @@ def run_one_batch(cfg, pipe, val_input, weight_dtype, global_generator=None,
     ori_imgs = [None for bi in range(bs)]
     ori_imgs_with_box = [None for bi in range(bs)]
     if val_input["pixel_values"] is not None:
-        ori_imgs = [
-            [to_pil_image(img_m11_to_01(val_input["pixel_values"][bi][i]))
-             for i in range(6)] for bi in range(bs)
-        ]
-        if cfg.show_box:
-            ori_imgs_with_box = [
-                draw_box_on_imgs(cfg, bi, val_input, ori_imgs[bi],
-                                 transparent_bg=transparent_bg)
-                for bi in range(bs)
-            ]
+        ori_imgs = [[
+            to_pil_image(img_m11_to_01(val_input["pixel_values"][bi][i]))
+            for i in range(6)
+        ] for bi in range(bs)]
+        # if cfg.show_box:
+        #     ori_imgs_with_box = [
+        #         draw_box_on_imgs(cfg, bi, val_input, ori_imgs[bi],
+        #                          transparent_bg=transparent_bg)
+        #         for bi in range(bs)
+        #     ]
 
     # camera_emb = self._embed_camera(val_input["camera_param"])
     camera_param = val_input["camera_param"].to(weight_dtype)
@@ -308,12 +324,13 @@ def run_one_batch(cfg, pipe, val_input, weight_dtype, global_generator=None,
     # save gen with box
     gen_imgs_wb_list = []
     if cfg.show_box:
-        for bi, images in enumerate(gen_imgs_list):
-            gen_imgs_wb_list.append([
-                draw_box_on_imgs(cfg, bi, val_input, images[ti],
-                                 transparent_bg=transparent_bg)
-                for ti in range(len(images))
-            ])
+        # for bi, images in enumerate(gen_imgs_list):
+        #     gen_imgs_wb_list.append([
+        #         draw_box_on_imgs(cfg, bi, val_input, images[ti],
+        #                          transparent_bg=transparent_bg)
+        #         for ti in range(len(images))
+        #     ])
+        pass
     else:
         for bi, images in enumerate(gen_imgs_list):
             gen_imgs_wb_list.append(None)
