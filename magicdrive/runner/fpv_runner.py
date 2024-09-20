@@ -49,27 +49,19 @@ class ControlnetUnetWrapper(ModelMixin):
         kwargs = move_to(kwargs, self.weight_dtype,
                          lambda x: x.dtype == torch.float32)
 
+        # print(f"input shapes: {noisy_latents.shape}, {timesteps.shape}, {encoder_hidden_states.shape}")
         # fmt: off
-        print(f"input shapes: {noisy_latents.shape}, {timesteps.shape}, {encoder_hidden_states.shape}")
-        for img in controlnet_images:
-            print(img.shape)
-        down_block_res_samples, mid_block_res_sample, \
-        encoder_hidden_states_with_cam = self.controlnet(
+        down_block_res_samples, mid_block_res_sample = self.controlnet(
             noisy_latents,  # b*t*n, 4, H/8, W/8
-            timesteps,  # b
-            encoder_hidden_states=encoder_hidden_states,  # b, len, 768
+            timesteps,  # b*t*n
+            encoder_hidden_states=encoder_hidden_states,  # b*t*n, len, 768
             # encoder_hidden_states_uncond=encoder_hidden_states_uncond,  # 1, len, 768
-            controlnet_cond=controlnet_images,  # List[Tensor(b, c, h, w)]
+            controlnet_cond=controlnet_images,  # List[Tensor(b*t*n, c, H, W)]
             conditioning_scale=[1.0]*len(controlnet_images),
             return_dict=False,
             **kwargs,
         )
         # fmt: on
-
-        # starting from here, we use (B n) as batch_size
-        # noisy_latents = rearrange(noisy_latents, "b n ... -> (b n) ...")
-        # if timesteps.ndim == 1:
-        #     timesteps = repeat(timesteps, "b -> (b n)", n=N_cam)
 
         # Predict the noise residual
         # NOTE: Since we fix most of the model, we cast the model to fp16 and
@@ -83,20 +75,17 @@ class ControlnetUnetWrapper(ModelMixin):
         with context(**context_kwargs):
             model_pred = self.unet(
                 noisy_latents,  # b*t*n, 4, H/8, W/8
-                timesteps.reshape(-1),  # b x n
-                encoder_hidden_states=encoder_hidden_states_with_cam.to(
-                    dtype=self.weight_dtype),  # b x n, len + 1, 768
+                timesteps,  # b*t*n
+                encoder_hidden_states=encoder_hidden_states,  # b*t*n, len, 768
                 # TODO: during training, some camera param are masked.
                 down_block_additional_residuals=[
                     sample.to(dtype=self.weight_dtype)
                     for sample in down_block_res_samples
-                ],  # all intermedite have four dims: b x n, c, h, w
+                ],  # all intermedite have four dims: b*t*n, c, h, w
                 mid_block_additional_residual=mid_block_res_sample.to(
-                    dtype=self.weight_dtype
-                ),  # b x n, 1280, h, w. we have 4 x 7 as mid_block_res
+                    dtype=self.weight_dtype),
             ).sample
 
-        # model_pred = rearrange(model_pred, "(b n) ... -> b n ...", n=N_cam)
         return model_pred
 
 
@@ -254,17 +243,14 @@ class FPVRunner(BaseRunner):
         with self.accelerator.accumulate(self.controlnet_unet):
             rgb = batch["pixel_values"]
             bsz, N_frame, N_cam = rgb.shape[:3]
-            print(f"rgb shape {rgb.shape}")
+            # print(f"rgb shape {rgb.shape}")
 
             # Convert images to latent space
             latents = self.vae.encode(
                 rearrange(rgb, "b c t n h w -> (b t n) c h w").to(
                     dtype=self.weight_dtype)).latent_dist.sample()
             latents = latents * self.vae.config.scaling_factor
-            # latents = rearrange(latents,
-            #                     "(b t n) c h w -> b t n c h w",
-            #                     t=N_frame,
-            #                     n=N_cam)
+            expanded_bsz = latents.shape[0]
 
             # Sample noise that we'll add to the latents
             noise = torch.randn_like(latents)
@@ -273,20 +259,22 @@ class FPVRunner(BaseRunner):
             if self.cfg.model.train_with_same_noise:
                 # different t and n share the same noise
                 noise = repeat(noise[::N_frame * N_cam],
-                               "b ... -> b r1 r2 ...",
-                               r1=N_frame,
-                               r2=N_cam)
+                               "b ... -> b t n ...",
+                               t=N_frame,
+                               n=N_cam)
 
-            expanded_bsz = latents.shape[0]
             # Sample a random timestep for each image
             if self.cfg.model.train_with_same_t:
                 timesteps = torch.randint(
                     0,
                     self.noise_scheduler.config.num_train_timesteps,
-                    (bsz, 1, 1),
+                    (bsz, ),
                     device=latents.device,
                 )
-                timesteps = timesteps.repeat(1, N_frame, N_cam).flatten()
+                timesteps = repeat(timesteps,
+                                   'b -> (b t n)',
+                                   t=N_frame,
+                                   n=N_cam)
             else:
                 timesteps = torch.randint(
                     0,
@@ -296,28 +284,27 @@ class FPVRunner(BaseRunner):
                 )
             timesteps = timesteps.long()
 
-            print(
-                f"latents shape: {latents.shape}, noise shape: {noise.shape}, timesteps shape: {timesteps.shape}"
-            )
+            # print(
+            #     f"latents shape: {latents.shape}, noise shape: {noise.shape}, timesteps shape: {timesteps.shape}"
+            # )
 
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
             noisy_latents = self._add_noise(latents, noise, timesteps)
 
-            input_ids = batch["input_ids"]
-            print(f"input_ids shape {input_ids.shape}")
             # Get the text embedding for conditioning
             encoder_hidden_states = self.text_encoder(batch["input_ids"])[0]
-            bs, seq_len, n_hidden = encoder_hidden_states.shape
-            encoder_hidden_states = encoder_hidden_states.unsqueeze(
-                1).unsqueeze(1)
-            encoder_hidden_states = encoder_hidden_states.expand(
-                -1, N_frame, N_cam, -1, -1)
-            encoder_hidden_states = encoder_hidden_states.reshape(
-                bs * N_frame * N_cam, seq_len, n_hidden)
+            encoder_hidden_states = repeat(encoder_hidden_states,
+                                           'b ... -> (b t n) ...',
+                                           t=N_frame,
+                                           n=N_cam)
             encoder_hidden_states_uncond = self.text_encoder(
                 batch["uncond_ids"])[0]
-            print(f"encoder_hidden_states shape {encoder_hidden_states.shape}")
+            encoder_hidden_states_uncond = repeat(encoder_hidden_states_uncond,
+                                                  'b ... -> (b t n) ...',
+                                                  t=N_frame,
+                                                  n=N_cam)
+            # print(f"encoder_hidden_states shape {encoder_hidden_states.shape}")
 
             cond1 = batch["depth"].to(dtype=self.weight_dtype)
             cond1 = cond1.reshape(-1, *cond1.shape[-3:])
@@ -329,7 +316,7 @@ class FPVRunner(BaseRunner):
                 noisy_latents,
                 timesteps,
                 encoder_hidden_states,
-                # encoder_hidden_states_uncond,
+                # encoder_hidden_states_uncond, # dont use this for now
                 controlnet_images,
                 **batch['kwargs'],
             )
