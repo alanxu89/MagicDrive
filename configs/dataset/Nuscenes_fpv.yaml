@@ -1,7 +1,7 @@
 dataset_type: NuScenesDatasetM
 dataset_root: /home/ubuntu/Documents/ml_data/nuscenes_data
 data_path: data.csv
-num_frames: 16
+num_frames: 4
 frame_interval: 2
 dataset_process_root: data/nuscenes_mmdet3d_2/  # with visibility
 dataset_cache_file_tag: null
