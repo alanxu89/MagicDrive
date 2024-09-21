@@ -185,6 +185,7 @@ class UNet2DConditionModelFPV(UNet2DConditionModel):
         zero_module_type: str = "zero_linear",
         crossview_attn_type: str = "basic",
         img_size: Optional[Tuple[int, int]] = None,
+        num_frames: int = None,
     ):
         super().__init__(
             sample_size=sample_size,
@@ -268,6 +269,7 @@ class UNet2DConditionModelFPV(UNet2DConditionModel):
                             neighboring_view_pair=neighboring_view_pair,
                             neighboring_attn_type=neighboring_attn_type,
                             zero_module_type=zero_module_type,
+                            frames=num_frames,
                         ))
                 else:
                     raise TypeError(
@@ -353,20 +355,20 @@ class UNet2DConditionModelFPV(UNet2DConditionModel):
                 copied where applicable.
         """
 
-        unet_2d_condition_multiview = cls(
+        unet_2d_condition_fpv = cls(
             **unet.config,
             # multivew
             **kwargs,
         )
 
         if load_weights_from_unet:
-            missing_keys, unexpected_keys = unet_2d_condition_multiview.load_state_dict(
+            missing_keys, unexpected_keys = unet_2d_condition_fpv.load_state_dict(
                 unet.state_dict(), strict=False)
             logging.info(f"[UNet2DConditionModelFPV] load pretrained with "
                          f"missing_keys: {missing_keys}; "
                          f"unexpected_keys: {unexpected_keys}")
 
-        return unet_2d_condition_multiview
+        return unet_2d_condition_fpv
 
     def forward(
         self,

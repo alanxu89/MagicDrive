@@ -20,6 +20,7 @@ unet:
   zero_module_type: zero_linear
   crossview_attn_type: ${..crossview_attn_type}
   img_size: ${dataset.image_size}
+  num_frames: ${dataset.num_frames}
     
 # model_module: diffusers.pipelines.controlnet.multicontrolnet.MultiControlNetModel
 controlnets:
