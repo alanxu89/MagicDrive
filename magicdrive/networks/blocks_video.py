@@ -67,7 +67,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
 
         self.neighboring_view_pair = _ensure_kv_is_int(neighboring_view_pair)
         self.neighboring_attn_type = neighboring_attn_type
-        self.frames = frames
+        self.n_frame = frames
 
         # multiview attention
         self.norm4 = (AdaLayerNorm(dim, num_embeds_ada_norm)
@@ -188,7 +188,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
         hidden_states: [b*n*f, channel, height, width], where n=num_cams, f=frames
         """
         # Notice that normalization is always applied before the real computation in the following blocks.
-        # 1. Self-Attention
+        # *********  1. Self-Attention  *********
         if self.use_ada_layer_norm:
             norm_hidden_states = self.norm1(hidden_states, timestep)
         elif self.use_ada_layer_norm_zero:
@@ -212,7 +212,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             attn_output = gate_msa.unsqueeze(1) * attn_output
         hidden_states = attn_output + hidden_states
 
-        # 2. Cross-Attention
+        # *********  2. Cross-Attention  *********
         if self.attn2 is not None:
             norm_hidden_states = (self.norm2(hidden_states, timestep)
                                   if self.use_ada_layer_norm else
@@ -228,18 +228,15 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             )
             hidden_states = attn_output + hidden_states
 
-        # S-T Attention
+        # *********  S-T Attention  *********
         norm_hidden_states = self.norm5(hidden_states)
-        # norm_hidden_states = rearrange(norm_hidden_states,
-        #                                '(b n f) ... -> (b n) f ...',
-        #                                f=self.frames)
         attn_output = self.attn5(norm_hidden_states,
                                  encoder_hidden_states=encoder_hidden_states
                                  if self.only_cross_attention else None,
-                                 video_length=self.frames)
+                                 video_length=self.n_frame)
         hidden_states = attn_output + hidden_states
 
-        # multi-view cross attention
+        # *********  multi-view cross attention  *********
         norm_hidden_states = (self.norm4(hidden_states, timestep)
                               if self.use_ada_layer_norm else
                               self.norm4(hidden_states))
@@ -275,18 +272,25 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
         # short-cut
         hidden_states = attn_output + hidden_states
 
-        # temporal attention
+        # *********  temporal attention  *********
         norm_hidden_states = (self.norm6(hidden_states, timestep)
                               if self.use_ada_layer_norm else
                               self.norm6(hidden_states))
+        seq_len = norm_hidden_states.shape[1]
         norm_hidden_states = rearrange(norm_hidden_states,
-                                       "(b f) ... -> b f ...",
-                                       f=self.frames)
+                                       "(b f n) s c -> (b n s) f c",
+                                       f=self.n_frame,
+                                       n=self.n_cam)
+        # print(f"norm_hidden_states: {norm_hidden_states.shape}")
         attn_output = self.attn6(norm_hidden_states)
-        attn_output = rearrange(attn_output, 'b f ... -> (b f) ...')
+        attn_output = rearrange(attn_output,
+                                '(b n s) f c -> (b f n) s c',
+                                s=seq_len,
+                                f=self.n_frame,
+                                n=self.n_cam)
         hidden_states = attn_output + hidden_states
 
-        # 3. Feed-forward
+        # *********  3. Feed-forward  *********
         norm_hidden_states = self.norm3(hidden_states)
 
         if self.use_ada_layer_norm_zero:
@@ -318,14 +322,18 @@ class SparseCausalAttention(Attention):
             hidden_states = self.group_norm(hidden_states.transpose(
                 1, 2)).transpose(1, 2)
 
+        # print(f"hidden_states: {hidden_states.shape}")
         query = self.to_q(hidden_states)
         dim = query.shape[-1]
-        query = self.reshape_heads_to_batch_dim(query)
+        query = self.head_to_batch_dim(query)
+        # print(f"query: {query.shape}")
 
         if self.added_kv_proj_dim is not None:
             raise NotImplementedError
 
         encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+        # print(f"encoder_hidden_states: {encoder_hidden_states.shape}")
+
         key = self.to_k(encoder_hidden_states)
         value = self.to_v(encoder_hidden_states)
 
@@ -343,8 +351,9 @@ class SparseCausalAttention(Attention):
             dim=2)
         value = rearrange(value, "b f d c -> (b f) d c")
 
-        key = self.reshape_heads_to_batch_dim(key)
-        value = self.reshape_heads_to_batch_dim(value)
+        key = self.head_to_batch_dim(key)
+        value = self.head_to_batch_dim(value)
+        # print(f"key/value: {key.shape, value.shape}")
 
         if attention_mask is not None:
             if attention_mask.shape[-1] != query.shape[1]:
@@ -354,21 +363,35 @@ class SparseCausalAttention(Attention):
                 attention_mask = attention_mask.repeat_interleave(self.heads,
                                                                   dim=0)
 
+        hidden_states = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            is_causal=False)
+        # print(f"out hidden_states: {hidden_states.shape}")
+
+        hidden_states = hidden_states.transpose(1, 2).reshape(
+            batch_size, -1, self.out_dim)
+        hidden_states = hidden_states.to(query.dtype)
+        # print(f"out hidden_states: {hidden_states.shape}")
+
         # attention, what we cannot get enough of
-        if self._use_memory_efficient_attention_xformers:
-            hidden_states = self._memory_efficient_attention_xformers(
-                query, key, value, attention_mask)
-            # Some versions of xformers return output in fp32, cast it back to the dtype of the input
-            hidden_states = hidden_states.to(query.dtype)
-        else:
-            if self._slice_size is None or query.shape[
-                    0] // self._slice_size == 1:
-                hidden_states = self._attention(query, key, value,
-                                                attention_mask)
-            else:
-                hidden_states = self._sliced_attention(query, key, value,
-                                                       sequence_length, dim,
-                                                       attention_mask)
+        # if self._use_memory_efficient_attention_xformers:
+        #     hidden_states = self._memory_efficient_attention_xformers(
+        #         query, key, value, attention_mask)
+        #     # Some versions of xformers return output in fp32, cast it back to the dtype of the input
+        #     hidden_states = hidden_states.to(query.dtype)
+        # else:
+        #     if self._slice_size is None or query.shape[
+        #             0] // self._slice_size == 1:
+        #         hidden_states = self._attention(query, key, value,
+        #                                         attention_mask)
+        #     else:
+        #         hidden_states = self._sliced_attention(query, key, value,
+        #                                                sequence_length, dim,
+        #                                                attention_mask)
 
         # linear proj
         hidden_states = self.to_out[0](hidden_states)
