@@ -135,7 +135,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
     def n_cam(self):
         return len(self.neighboring_view_pair)
 
-    def _construct_attn_input(self, norm_hidden_states):
+    def _construct_multiview_attn_input(self, norm_hidden_states):
         B = len(norm_hidden_states)
         # reshape, key for origin view, value for ref view
         hidden_states_in1 = []
@@ -185,7 +185,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
         class_labels=None,
     ):
         """
-        hidden_states: [b*n*f, channel, height, width], where n=num_cams, f=frames
+        hidden_states: [b*f*n, channel, height, width], where f=frames, n=num_cams
         """
         # Notice that normalization is always applied before the real computation in the following blocks.
         # *********  1. Self-Attention  *********
@@ -227,14 +227,17 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
                 **cross_attention_kwargs,
             )
             hidden_states = attn_output + hidden_states
+        # print(f"hidden_states after Cross Attention {hidden_states.shape}")
 
         # *********  S-T Attention  *********
         norm_hidden_states = self.norm5(hidden_states)
         attn_output = self.attn5(norm_hidden_states,
                                  encoder_hidden_states=encoder_hidden_states
                                  if self.only_cross_attention else None,
-                                 video_length=self.n_frame)
+                                 video_length=self.n_frame,
+                                 num_cams=self.n_cam)
         hidden_states = attn_output + hidden_states
+        # print(f"hidden_states after S-T Attention {hidden_states.shape}")
 
         # *********  multi-view cross attention  *********
         norm_hidden_states = (self.norm4(hidden_states, timestep)
@@ -242,12 +245,14 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
                               self.norm4(hidden_states))
         # batch dim first, cam dim second
         norm_hidden_states = rearrange(norm_hidden_states,
-                                       '(b n) ... -> b n ...',
+                                       '(b f n) ... -> (b f) n ...',
+                                       f=self.n_frame,
                                        n=self.n_cam)
         B = len(norm_hidden_states)
         # key is query in attention; value is key-value in attention
-        hidden_states_in1, hidden_states_in2, cam_order = self._construct_attn_input(
+        hidden_states_in1, hidden_states_in2, cam_order = self._construct_multiview_attn_input(
             norm_hidden_states, )
+        # print(hidden_states_in1.shape, hidden_states_in1.shape)
         # attention
         attn_raw_output = self.attn4(
             hidden_states_in1,
@@ -313,7 +318,8 @@ class SparseCausalAttention(Attention):
                 hidden_states,
                 encoder_hidden_states=None,
                 attention_mask=None,
-                video_length=None):
+                video_length=None,
+                num_cams=None):
         batch_size, sequence_length, _ = hidden_states.shape
 
         encoder_hidden_states = encoder_hidden_states
@@ -340,16 +346,22 @@ class SparseCausalAttention(Attention):
         former_frame_index = torch.arange(video_length) - 1
         former_frame_index[0] = 0
 
-        key = rearrange(key, "(b f) d c -> b f d c", f=video_length)
+        key = rearrange(key,
+                        "(b f n) d c -> (b n) f d c",
+                        f=video_length,
+                        n=num_cams)
         key = torch.cat(
             [key[:, [0] * video_length], key[:, former_frame_index]], dim=2)
-        key = rearrange(key, "b f d c -> (b f) d c")
+        key = rearrange(key, "(b n) f d c -> (b f n) d c", n=num_cams)
 
-        value = rearrange(value, "(b f) d c -> b f d c", f=video_length)
+        value = rearrange(value,
+                          "(b f n) d c -> (b n) f d c",
+                          f=video_length,
+                          n=num_cams)
         value = torch.cat(
             [value[:, [0] * video_length], value[:, former_frame_index]],
             dim=2)
-        value = rearrange(value, "b f d c -> (b f) d c")
+        value = rearrange(value, "(b n) f d c -> (b f n) d c", n=num_cams)
 
         key = self.head_to_batch_dim(key)
         value = self.head_to_batch_dim(value)
