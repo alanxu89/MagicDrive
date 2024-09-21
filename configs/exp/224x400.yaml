@@ -7,7 +7,11 @@ defaults:
 
 task_id: 224x400
 runner:
+  train_batch_size: 1
   num_train_epochs: 350
   validation_show_box: true
   enable_xformers_memory_efficient_attention: false  # always need this.
   bbox_add_ratio: 0.1
+
+dataset:
+  num_frames: 4
