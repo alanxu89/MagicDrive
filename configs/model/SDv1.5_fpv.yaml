@@ -8,7 +8,7 @@ train_with_same_t: true
 
 runner_module: magicdrive.runner.fpv_runner.FPVRunner
 
-pipe_module: magicdrive.pipeline.pipeline_bev_controlnet.StableDiffusionBEVControlNetPipeline
+pipe_module: magicdrive.pipeline.pipeline_fpv_controlnet.StableDiffusionFPVMultiControlNetPipeline
 
 unet_module: magicdrive.networks.unet_2d_condition_fpv.UNet2DConditionModelFPV
 use_fp32_for_unet_trainable: true

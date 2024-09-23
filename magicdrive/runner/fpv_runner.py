@@ -127,8 +127,7 @@ class FPVRunner(BaseRunner):
         self.controlnet.train(train)
         self.unet.requires_grad_(False)
         for name, mod in self.unet.trainable_module.items():
-            logging.debug(
-                f"[MultiviewRunner] set {name} to requires_grad = True")
+            logging.debug(f"[FPVRunner] set {name} to requires_grad = True")
             mod.requires_grad_(train)
 
     def set_optimizer_scheduler(self):
@@ -150,8 +149,7 @@ class FPVRunner(BaseRunner):
         unet_params = self.unet.trainable_parameters
         param_count = smart_param_count(unet_params)
         logging.info(
-            f"[MultiviewRunner] add {param_count} params from unet to optimizer."
-        )
+            f"[FPVRunner] add {param_count} params from unet to optimizer.")
         params_to_optimize += unet_params
         self.optimizer = optimizer_class(
             params_to_optimize,
@@ -207,7 +205,7 @@ class FPVRunner(BaseRunner):
             # move optimized params to fp32. TODO: is this necessary?
             if self.cfg.model.use_fp32_for_unet_trainable:
                 for name, mod in self.unet.trainable_module.items():
-                    logging.debug(f"[MultiviewRunner] set {name} to fp32")
+                    logging.debug(f"[FPVRunner] set {name} to fp32")
                     mod.to(dtype=torch.float32)
                     mod._original_forward = mod.forward
                     # autocast intermediate is necessary since others are fp16
