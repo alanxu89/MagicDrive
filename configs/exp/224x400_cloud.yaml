@@ -1,0 +1,22 @@
+# @package _global_
+defaults:
+  - /dataset/Nuscenes_fpv
+  # - /runner/8gpus
+  - model: ../../model/SDv1.5_fpv
+  - _self_  # make sure override
+
+task_id: 224x400
+runner:
+  train_batch_size: 2
+  num_train_epochs: 350
+  validation_show_box: true
+  enable_xformers_memory_efficient_attention: false  # always need this.
+  bbox_add_ratio: 0.1
+  checkpointing_steps: 3000
+  validation_steps: 100000
+
+dataset:
+  num_frames: 8
+  dataset_root: /root/autodl-tmp/nuscenes/nuscenes_data_processed
+
+log_root_prefix: /root/autodl-tmp/magicdrive-log
