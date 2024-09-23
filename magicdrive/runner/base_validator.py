@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Tuple, List, Union
 import logging
 from tqdm import tqdm
 from PIL import Image
@@ -9,6 +9,7 @@ import torchvision
 from torchvision.transforms.functional import to_pil_image, to_tensor
 
 from diffusers import UniPCMultistepScheduler
+from diffusers.pipelines.controlnet import MultiControlNetModel
 from accelerate.tracking import GeneralTracker
 
 from magicdrive.runner.utils import (
@@ -18,9 +19,7 @@ from magicdrive.runner.utils import (
 )
 from magicdrive.misc.common import move_to
 from magicdrive.misc.test_utils import draw_box_on_imgs
-from magicdrive.pipeline.pipeline_bev_controlnet import (
-    BEVStableDiffusionPipelineOutput,
-)
+from magicdrive.pipeline.pipeline_fpv_controlnet import FPVStableDiffusionPipelineOutput
 from magicdrive.dataset.utils import collate_fn
 from magicdrive.networks.unet_addon_rawbox import BEVControlNetModel
 
@@ -38,12 +37,12 @@ def format_ori_with_gen(ori_img, gen_img_list):
     # 0-255 np -> 0-1 tensor -> grid -> 0-255 pil -> np
     formatted_images = torchvision.utils.make_grid(
         [to_tensor(im) for im in formatted_images], nrow=1)
-    formatted_images = np.asarray(
-        to_pil_image(formatted_images))
+    formatted_images = np.asarray(to_pil_image(formatted_images))
     return formatted_images
 
 
 class BaseValidator:
+
     def __init__(self, cfg, val_dataset, pipe_cls, pipe_param) -> None:
         self.cfg = cfg
         self.val_dataset = val_dataset
@@ -52,13 +51,10 @@ class BaseValidator:
         logging.info(
             f"[BaseValidator] Validator use model_param: {pipe_param.keys()}")
 
-    def validate(
-        self,
-        controlnet: BEVControlNetModel,
-        unet,
-        trackers: Tuple[GeneralTracker, ...],
-        step, weight_dtype, device
-    ):
+    def validate(self, controlnet: Union[BEVControlNetModel,
+                                         MultiControlNetModel], unet,
+                 trackers: Tuple[GeneralTracker,
+                                 ...], step, weight_dtype, device):
         logging.info("[BaseValidator] Running validation... ")
         controlnet.eval()  # important !!!
         unet.eval()
@@ -69,13 +65,13 @@ class BaseValidator:
             unet=unet,
             controlnet=controlnet,
             safety_checker=None,
-            feature_extractor=None,  # since v1.5 has default, we need to override
+            feature_extractor=
+            None,  # since v1.5 has default, we need to override
             torch_dtype=weight_dtype,
         )
         # NOTE: this scheduler does not take generator as kwargs.
         pipeline.scheduler = UniPCMultistepScheduler.from_config(
-            pipeline.scheduler.config
-        )
+            pipeline.scheduler.config)
         pipeline = pipeline.to(device)
         pipeline.set_progress_bar_config(disable=True)
 
@@ -86,8 +82,8 @@ class BaseValidator:
         progress_bar = tqdm(
             range(
                 0,
-                len(self.cfg.runner.validation_index)
-                * self.cfg.runner.validation_times,
+                len(self.cfg.runner.validation_index) *
+                self.cfg.runner.validation_times,
             ),
             desc="Val Steps",
         )
@@ -95,7 +91,9 @@ class BaseValidator:
         for validation_i in self.cfg.runner.validation_index:
             raw_data = self.val_dataset[validation_i]  # cannot index loader
             val_input = collate_fn(
-                [raw_data], self.cfg.dataset.template, is_train=False,
+                [raw_data],
+                self.cfg.dataset.template,
+                is_train=False,
                 bbox_mode=self.cfg.model.bbox_mode,
                 bbox_view_shared=self.cfg.model.bbox_view_shared,
             )
@@ -107,14 +105,13 @@ class BaseValidator:
                 generator = None
             else:
                 generator = torch.Generator(device=device).manual_seed(
-                    self.cfg.seed
-                )
+                    self.cfg.seed)
 
             # for each input param, we generate several times to check variance.
             gen_list, gen_wb_list = [], []
             for _ in range(self.cfg.runner.validation_times):
                 with torch.autocast("cuda"):
-                    image: BEVStableDiffusionPipelineOutput = pipeline(
+                    image: FPVStableDiffusionPipelineOutput = pipeline(
                         prompt=val_input["captions"],
                         image=val_input["bev_map_with_aux"],
                         camera_param=camera_param,
