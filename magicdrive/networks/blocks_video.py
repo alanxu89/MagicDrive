@@ -174,6 +174,46 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
                 f"Unknown type: {self.neighboring_attn_type}")
         return hidden_states_in1, hidden_states_in2, cam_order
 
+    def _construct_multiview_attn_input_v2(self, norm_hidden_states):
+        """
+        we split each image into left and right halves, and only do attention
+        between i_l and (i-1)_r, and i_r and (i+1)_l
+        input: [B, N, H*W, C]
+        outputs: [N*2*B, H*W/2, C]
+        """
+        H = 28
+        W = 50
+        B, N, S, C = norm_hidden_states.shape
+        norm_hidden_states_left, norm_hidden_states_right = norm_hidden_states.reshape(
+            B, N, H, W, C).chunk(2, dim=-2)
+        # B, N, H*W/2, C
+        norm_hidden_states_left = norm_hidden_states_left.reshape(B, N, -1, C)
+        norm_hidden_states_right = norm_hidden_states_right.reshape(
+            B, N, -1, C)
+        # reshape, key for origin view, value for ref view
+        hidden_states_in1 = []
+        hidden_states_in2 = []
+        cam_order = []
+        if self.neighboring_attn_type == "add":
+            for key, values in self.neighboring_view_pair.items():
+                # i_l & (i-1)_r
+                hidden_states_in1.append(norm_hidden_states_left[:, key])
+                hidden_states_in2.append(norm_hidden_states_right[:,
+                                                                  values[0]])
+                cam_order += [key] * B
+                # i_r & (i+1)_l
+                hidden_states_in1.append(norm_hidden_states_right[:, key])
+                hidden_states_in2.append(norm_hidden_states_left[:, values[1]])
+                cam_order += [key] * B
+            # N*2*B, H*W/2, C
+            hidden_states_in1 = torch.cat(hidden_states_in1, dim=0)
+            hidden_states_in2 = torch.cat(hidden_states_in2, dim=0)
+            cam_order = torch.LongTensor(cam_order)
+        else:
+            raise NotImplementedError(
+                f"Unknown type: {self.neighboring_attn_type}")
+        return hidden_states_in1, hidden_states_in2, cam_order
+
     def forward(
         self,
         hidden_states,
@@ -250,8 +290,16 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
                                        n=self.n_cam)
         B = len(norm_hidden_states)
         # key is query in attention; value is key-value in attention
-        hidden_states_in1, hidden_states_in2, cam_order = self._construct_multiview_attn_input(
-            norm_hidden_states, )
+        splits = False
+        if splits:
+            # key is query in attention; value is key-value in attention
+            hidden_states_in1, hidden_states_in2, cam_order = self._construct_multiview_attn_input_v2(
+                norm_hidden_states, )
+        else:
+            # key is query in attention; value is key-value in attention
+            hidden_states_in1, hidden_states_in2, cam_order = self._construct_multiview_attn_input(
+                norm_hidden_states, )
+
         # print(hidden_states_in1.shape, hidden_states_in1.shape)
         # attention
         attn_raw_output = self.attn4(
@@ -260,18 +308,33 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             **cross_attention_kwargs,
         )
         # final output
-        if self.neighboring_attn_type == "self":
+        if splits:
+            H = 28
+            W = 50  #?
             attn_output = rearrange(attn_raw_output,
-                                    'b (n l) ... -> b n l ...',
-                                    n=self.n_cam)
+                                    '(n m b) ... -> (b n) m ...',
+                                    n=self.n_cam,
+                                    m=2,
+                                    b=B)
+            attn_output = rearrange(attn_raw_output,
+                                    'b1 m (h w1) c -> b1 (h m w1) c',
+                                    m=2,
+                                    h=H)
         else:
-            attn_output = torch.zeros_like(norm_hidden_states)
-            for cam_i in range(self.n_cam):
-                attn_out_mv = rearrange(attn_raw_output[cam_order == cam_i],
-                                        '(n b) ... -> b n ...',
-                                        b=B)
-                attn_output[:, cam_i] = torch.sum(attn_out_mv, dim=1)
-        attn_output = rearrange(attn_output, 'b n ... -> (b n) ...')
+            # final output
+            if self.neighboring_attn_type == "self":
+                attn_output = rearrange(attn_raw_output,
+                                        'b (n l) ... -> b n l ...',
+                                        n=self.n_cam)
+            else:
+                attn_output = torch.zeros_like(norm_hidden_states)
+                for cam_i in range(self.n_cam):
+                    attn_out_mv = rearrange(
+                        attn_raw_output[cam_order == cam_i],
+                        '(n b) ... -> b n ...',
+                        b=B)
+                    attn_output[:, cam_i] = torch.sum(attn_out_mv, dim=1)
+            attn_output = rearrange(attn_output, 'b n ... -> (b n) ...')
         # apply zero init connector (one layer)
         attn_output = self.connector(attn_output)
         # short-cut
