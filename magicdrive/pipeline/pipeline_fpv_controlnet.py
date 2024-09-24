@@ -111,13 +111,13 @@ class StableDiffusionFPVMultiControlNetPipeline(
         return extra_step_kwargs
 
     def decode_latents(self, latents):
-        # decode latents with 5-dims
+        # decode latents with 4-dims
         latents = 1 / self.vae.config.scaling_factor * latents
 
-        bs = len(latents)
-        latents = rearrange(latents, 'b c ... -> (b c) ...')
+        bs = latents.shape[0]
+        latents = rearrange(latents, 'b m ... -> (b m) ...')
         image = self.vae.decode(latents).sample
-        image = rearrange(image, '(b c) ... -> b c ...', b=bs)
+        image = rearrange(image, '(b m) ... -> b m ...', b=bs)
 
         image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
@@ -153,6 +153,7 @@ class StableDiffusionFPVMultiControlNetPipeline(
         bev_controlnet_kwargs={},
         bbox_max_length=None,
         frames=8,
+        cams=3,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -271,20 +272,14 @@ class StableDiffusionFPVMultiControlNetPipeline(
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
-        ### BEV, check camera_param ###
-        if camera_param is None:
-            # use uncond_cam and disable classifier free guidance
-            N_cam = 6  # TODO: hard-coded
-            camera_param = self.controlnet.uncond_cam_param(
-                (batch_size, N_cam))
-            do_classifier_free_guidance = False
-        ### done ###
-
-        # if isinstance(self.controlnet, MultiControlNetModel) and isinstance(controlnet_conditioning_scale, float):
-        #     controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(self.controlnet.nets)
+        if isinstance(self.controlnet, MultiControlNetModel) and isinstance(
+                controlnet_conditioning_scale, float):
+            controlnet_conditioning_scale = [controlnet_conditioning_scale
+                                             ] * len(self.controlnet.nets)
 
         # 3. Encode input prompt
         # NOTE: here they use padding to 77, is this necessary?
+        prompt = prompt * (frames * cams)
         prompt_embeds = self._encode_prompt(
             prompt,
             device,
@@ -298,17 +293,6 @@ class StableDiffusionFPVMultiControlNetPipeline(
         # 4. Prepare image
         # NOTE: if image is not tensor, there will be several process.
         assert not self.control_image_processor.config.do_normalize, "Your controlnet should not normalize the control image."
-        # image = self.prepare_image(
-        #     image=image,
-        #     width=width,
-        #     height=height,
-        #     batch_size=batch_size * num_images_per_prompt,
-        #     num_images_per_prompt=num_images_per_prompt,
-        #     device=device,
-        #     dtype=self.controlnet.dtype,
-        #     do_classifier_free_guidance=do_classifier_free_guidance,
-        #     guess_mode=guess_mode,
-        # )  # (2 * b, c_26, 200, 200)
         if isinstance(self.controlnet, ControlNetModel):
             image = self.prepare_image(
                 image=image,
@@ -318,7 +302,7 @@ class StableDiffusionFPVMultiControlNetPipeline(
                 num_images_per_prompt=num_images_per_prompt,
                 device=device,
                 dtype=self.controlnet.dtype,
-                do_classifier_free_guidance=self.do_classifier_free_guidance,
+                do_classifier_free_guidance=do_classifier_free_guidance,
                 guess_mode=guess_mode,
             )
             height, width = image.shape[-2:]
@@ -331,6 +315,7 @@ class StableDiffusionFPVMultiControlNetPipeline(
                 image = [list(t) for t in zip(*image)]
 
             for image_ in image:
+                image_ = rearrange(image_, 'b c f n h w -> (b f n) c h w')
                 image_ = self.prepare_image(
                     image=image_,
                     width=width,
@@ -339,8 +324,7 @@ class StableDiffusionFPVMultiControlNetPipeline(
                     num_images_per_prompt=num_images_per_prompt,
                     device=device,
                     dtype=self.controlnet.dtype,
-                    do_classifier_free_guidance=self.
-                    do_classifier_free_guidance,
+                    do_classifier_free_guidance=do_classifier_free_guidance,
                     guess_mode=guess_mode,
                 )
 
@@ -381,7 +365,7 @@ class StableDiffusionFPVMultiControlNetPipeline(
         # assert camera_param.shape[0] == batch_size, \
         #     f"Except {batch_size} camera params, but you have bs={len(camera_param)}"
         # N_cam = camera_param.shape[1]
-        latents = repeat(latents, 'b ... -> (b f n) ...', t=frames, n=N_cam)
+        latents = repeat(latents, 'b ... -> (b f n) ...', f=frames, n=cams)
 
         # prompt_embeds, no need for b, len, 768
         # image, no need for b, c, 200, 200
@@ -458,9 +442,6 @@ class StableDiffusionFPVMultiControlNetPipeline(
                 # Strating from here, we use 4-dim data.
                 # encoder_hidden_states_with_cam: (2b x N), 78, 768
                 # latent_model_input: 2b, N, 4, 28, 50 -> 2b x N, 4, 28, 50
-                latent_model_input = rearrange(latent_model_input,
-                                               'b n ... -> (b n) ...')
-                latents = rearrange(latents, 'b n ... -> (b n) ...')
 
                 # predict the noise residual: 2bxN, 4, 28, 50
                 additional_param = {}
@@ -485,16 +466,12 @@ class StableDiffusionFPVMultiControlNetPipeline(
                 # compute the previous noisy sample x_t -> x_t-1
                 # NOTE: is the scheduler use randomness, please handle the logic
                 # for generator.
+
                 latents = self.scheduler.step(noise_pred, t, latents,
                                               **extra_step_kwargs).prev_sample
 
                 # =============================================================
-                # now we add dimension back, use 5-dim data.
                 # NOTE: only `latents` is updated through the loop
-                latents = rearrange(latents,
-                                    '(b f n) ... -> b f n ...',
-                                    f=frames,
-                                    n=N_cam)
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or (
@@ -503,6 +480,12 @@ class StableDiffusionFPVMultiControlNetPipeline(
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
+
+        # now we add dimension back, use 5-dim data.
+        latents = rearrange(latents,
+                            '(b f n) ... -> b (f n) ...',
+                            f=frames,
+                            n=cams)
 
         ###### BEV: here rebuild the shapes back. post-process still assume
         # latents, no need for b, n, 4, 28, 50

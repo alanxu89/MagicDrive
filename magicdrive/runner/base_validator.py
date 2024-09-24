@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torchvision
 from torchvision.transforms.functional import to_pil_image, to_tensor
+from einops import rearrange
 
 from diffusers import UniPCMultistepScheduler
 from diffusers.pipelines.controlnet import MultiControlNetModel
@@ -46,6 +47,7 @@ class BaseValidator:
     def __init__(self, cfg, val_dataset, pipe_cls, pipe_param) -> None:
         self.cfg = cfg
         self.n_cam = len(self.cfg.dataset.view_order)
+        self.n_frame = self.cfg.dataset.num_frames
         self.val_dataset = val_dataset
         self.pipe_cls = pipe_cls
         self.pipe_param = pipe_param
@@ -112,7 +114,7 @@ class BaseValidator:
                 with torch.autocast("cuda"):
                     image: FPVStableDiffusionPipelineOutput = pipeline(
                         prompt=val_input["captions"],
-                        image=[val_input["depth", val_input["semantic_map"]]],
+                        image=[val_input["depth"], val_input["semantic_map"]],
                         height=self.cfg.dataset.image_size[0],
                         width=self.cfg.dataset.image_size[1],
                         generator=generator,
@@ -132,20 +134,29 @@ class BaseValidator:
                 progress_bar.update(1)
 
             # make image for 6 views and save to dict
+            val_input["pixel_values"] = rearrange(
+                val_input["pixel_values"], "b c f n h w -> b (f n) c h w")
+            val_input["depth"] = rearrange(val_input["depth"],
+                                           "b c f n h w -> b (f n) c h w")
+            val_input["semantic_map"] = rearrange(
+                val_input["semantic_map"], "b c f n h w -> b (f n) c h w")
+
+            N = self.n_frame * self.n_cam
             ori_imgs = [
                 to_pil_image(img_m11_to_01(val_input["pixel_values"][0][i]))
-                for i in range(self.n_cam)
+                for i in range(N)
             ]
+            print(len(ori_imgs))
             ori_img = concat_6_views(ori_imgs)
             # make image for 6 views and save to dict
             ori_depths = [
                 to_pil_image(img_m11_to_01(val_input["depth"][0][i]))
-                for i in range(self.n_cam)
+                for i in range(N)
             ]
             ori_depth = concat_6_views(ori_depths)
             ori_maps = [
                 to_pil_image(img_m11_to_01(val_input["semantic_map"][0][i]))
-                for i in range(self.n_cam)
+                for i in range(N)
             ]
             ori_map = concat_6_views(ori_maps)
             # ori_img_wb = concat_6_views(
@@ -153,7 +164,7 @@ class BaseValidator:
             # map_img_np = visualize_map(
             #     self.cfg, val_input["bev_map_with_aux"][0])
             image_logs.append({
-                "map_img_np": map_img_np,  # condition
+                # "map_img_np": map_img_np,  # condition
                 "gen_img_list": gen_list,  # output
                 # "gen_img_wb_list": gen_wb_list,  # output
                 "ori_img": ori_img,  # condition
@@ -165,7 +176,7 @@ class BaseValidator:
         for tracker in trackers:
             if tracker.name == "tensorboard":
                 for log in image_logs:
-                    map_img_np = log["map_img_np"]
+                    # map_img_np = log["map_img_np"]
                     validation_prompt = log["validation_prompt"]
 
                     formatted_images = format_ori_with_gen(
@@ -181,9 +192,9 @@ class BaseValidator:
                     #     validation_prompt + "(with box)", formatted_images,
                     #     step, dataformats="HWC")
 
-                    tracker.writer.add_image(
-                        "map: " + validation_prompt, map_img_np, step,
-                        dataformats="HWC")
+                    # tracker.writer.add_image(
+                    #     "map: " + validation_prompt, map_img_np, step,
+                    #     dataformats="HWC")
             elif tracker.name == "wandb":
                 raise NotImplementedError("Do not use wandb.")
                 formatted_images = []
