@@ -20,7 +20,7 @@ from magicdrive.runner.utils import (
 from magicdrive.misc.common import move_to
 from magicdrive.misc.test_utils import draw_box_on_imgs
 from magicdrive.pipeline.pipeline_fpv_controlnet import FPVStableDiffusionPipelineOutput
-from magicdrive.dataset.utils import collate_fn
+from magicdrive.dataset.utils import collate_fn_v2
 from magicdrive.networks.unet_addon_rawbox import BEVControlNetModel
 
 
@@ -45,6 +45,7 @@ class BaseValidator:
 
     def __init__(self, cfg, val_dataset, pipe_cls, pipe_param) -> None:
         self.cfg = cfg
+        self.n_cam = len(self.cfg.dataset.view_order)
         self.val_dataset = val_dataset
         self.pipe_cls = pipe_cls
         self.pipe_param = pipe_param
@@ -90,15 +91,13 @@ class BaseValidator:
 
         for validation_i in self.cfg.runner.validation_index:
             raw_data = self.val_dataset[validation_i]  # cannot index loader
-            val_input = collate_fn(
+            val_input = collate_fn_v2(
                 [raw_data],
                 self.cfg.dataset.template,
+                tokenizer=None,
                 is_train=False,
-                bbox_mode=self.cfg.model.bbox_mode,
-                bbox_view_shared=self.cfg.model.bbox_view_shared,
             )
             # camera_emb = self._embed_camera(val_input["camera_param"])
-            camera_param = val_input["camera_param"].to(weight_dtype)
 
             # let different prompts have the same random seed
             if self.cfg.seed is None:
@@ -113,8 +112,7 @@ class BaseValidator:
                 with torch.autocast("cuda"):
                     image: FPVStableDiffusionPipelineOutput = pipeline(
                         prompt=val_input["captions"],
-                        image=val_input["bev_map_with_aux"],
-                        camera_param=camera_param,
+                        image=[val_input["depth", val_input["semantic_map"]]],
                         height=self.cfg.dataset.image_size[0],
                         width=self.cfg.dataset.image_size[1],
                         generator=generator,
@@ -124,35 +122,45 @@ class BaseValidator:
                     assert len(image.images) == 1
                     image: List[Image.Image] = image.images[0]
 
-                gen_img = concat_6_views(image)
+                gen_img = concat_6_views(image, oneline=True)
                 gen_list.append(gen_img)
-                if self.cfg.runner.validation_show_box:
-                    image_with_box = draw_box_on_imgs(
-                        self.cfg, 0, val_input, image)
-                    gen_wb_list.append(concat_6_views(image_with_box))
+                # if self.cfg.runner.validation_show_box:
+                #     image_with_box = draw_box_on_imgs(
+                #         self.cfg, 0, val_input, image)
+                #     gen_wb_list.append(concat_6_views(image_with_box))
 
                 progress_bar.update(1)
 
             # make image for 6 views and save to dict
             ori_imgs = [
                 to_pil_image(img_m11_to_01(val_input["pixel_values"][0][i]))
-                for i in range(6)
+                for i in range(self.n_cam)
             ]
             ori_img = concat_6_views(ori_imgs)
-            ori_img_wb = concat_6_views(
-                draw_box_on_imgs(self.cfg, 0, val_input, ori_imgs))
-            map_img_np = visualize_map(
-                self.cfg, val_input["bev_map_with_aux"][0])
-            image_logs.append(
-                {
-                    "map_img_np": map_img_np,  # condition
-                    "gen_img_list": gen_list,  # output
-                    "gen_img_wb_list": gen_wb_list,  # output
-                    "ori_img": ori_img,  # input
-                    "ori_img_wb": ori_img_wb,  # input
-                    "validation_prompt": val_input["captions"][0],
-                }
-            )
+            # make image for 6 views and save to dict
+            ori_depths = [
+                to_pil_image(img_m11_to_01(val_input["depth"][0][i]))
+                for i in range(self.n_cam)
+            ]
+            ori_depth = concat_6_views(ori_depths)
+            ori_maps = [
+                to_pil_image(img_m11_to_01(val_input["semantic_map"][0][i]))
+                for i in range(self.n_cam)
+            ]
+            ori_map = concat_6_views(ori_maps)
+            # ori_img_wb = concat_6_views(
+            #     draw_box_on_imgs(self.cfg, 0, val_input, ori_imgs))
+            # map_img_np = visualize_map(
+            #     self.cfg, val_input["bev_map_with_aux"][0])
+            image_logs.append({
+                "map_img_np": map_img_np,  # condition
+                "gen_img_list": gen_list,  # output
+                # "gen_img_wb_list": gen_wb_list,  # output
+                "ori_img": ori_img,  # condition
+                "ori_depth": ori_depth,  # condition
+                "ori_semantic_map": ori_map,
+                "validation_prompt": val_input["captions"][0],
+            })
 
         for tracker in trackers:
             if tracker.name == "tensorboard":
@@ -162,15 +170,16 @@ class BaseValidator:
 
                     formatted_images = format_ori_with_gen(
                         log["ori_img"], log["gen_img_list"])
-                    tracker.writer.add_image(
-                        validation_prompt, formatted_images, step,
-                        dataformats="HWC")
+                    tracker.writer.add_image(validation_prompt,
+                                             formatted_images,
+                                             step,
+                                             dataformats="HWC")
 
-                    formatted_images = format_ori_with_gen(
-                        log["ori_img_wb"], log["gen_img_wb_list"])
-                    tracker.writer.add_image(
-                        validation_prompt + "(with box)", formatted_images,
-                        step, dataformats="HWC")
+                    # formatted_images = format_ori_with_gen(
+                    #     log["ori_img_wb"], log["gen_img_wb_list"])
+                    # tracker.writer.add_image(
+                    #     validation_prompt + "(with box)", formatted_images,
+                    #     step, dataformats="HWC")
 
                     tracker.writer.add_image(
                         "map: " + validation_prompt, map_img_np, step,
