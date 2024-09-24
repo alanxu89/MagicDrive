@@ -15,6 +15,7 @@ runner:
   checkpointing_steps: 4000
   validation_steps: 2000
   validation_index: [1, 31, 62, 97]
+  validation_times: 2
 
 dataset:
   num_frames: 8
