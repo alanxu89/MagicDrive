@@ -26,5 +26,8 @@ unet:
 controlnets:
   - name: semantic_map
     module: diffusers.models.controlnet.ControlNetModel
+    from_unet: true
   - name: depth
     module: diffusers.models.controlnet.ControlNetModel
+    from_unet: false
+    from_pretrained: lllyasviel/control_v11f1p_sd15_depth

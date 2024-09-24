@@ -117,7 +117,16 @@ class FPVRunner(BaseRunner):
                                                    resolve=True)
         for controlnet_param in controlnets_param:
             ctrl_net_module = load_module(controlnet_param['module'])
-            controlnets.append(ctrl_net_module.from_unet(unet))
+            if controlnet_param['from_unet']:
+                ctrl_net = ctrl_net_module.from_unet(unet)
+            elif controlnet_param['from_pretrained']:
+                ctrl_net = ctrl_net_module.from_pretrained(
+                    controlnet_param['from_pretrained'])
+            else:
+                raise ValueError(
+                    f"wrong config for controlnet {controlnet_param['name']}")
+            controlnets.append(ctrl_net)
+
         self.controlnet = MultiControlNetModel(controlnets=controlnets)
 
     def _set_model_trainable_state(self, train=True):
