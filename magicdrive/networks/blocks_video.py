@@ -126,6 +126,10 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
         ret = {
             "norm4": self.norm4,
             "attn4": self.attn4,
+            "norm5": self.norm5,
+            "attn5": self.attn5,
+            "norm6": self.norm6,
+            "attn6": self.attn6,
         }
         if isinstance(self.connector, nn.Module):
             ret["connector"] = self.connector
@@ -300,7 +304,6 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             hidden_states_in1, hidden_states_in2, cam_order = self._construct_multiview_attn_input(
                 norm_hidden_states, )
 
-        # print(hidden_states_in1.shape, hidden_states_in1.shape)
         # attention
         attn_raw_output = self.attn4(
             hidden_states_in1,
@@ -395,7 +398,6 @@ class SparseCausalAttention(Attention):
         query = self.to_q(hidden_states)
         dim = query.shape[-1]
         query = self.head_to_batch_dim(query)
-        # print(f"query: {query.shape}")
 
         if self.added_kv_proj_dim is not None:
             raise NotImplementedError
@@ -445,7 +447,6 @@ class SparseCausalAttention(Attention):
             attn_mask=attention_mask,
             dropout_p=0.0,
             is_causal=False)
-        # print(f"out hidden_states: {hidden_states.shape}")
 
         hidden_states = hidden_states.transpose(1, 2).reshape(
             batch_size, -1, self.out_dim)
