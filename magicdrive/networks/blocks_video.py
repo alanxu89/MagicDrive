@@ -82,16 +82,6 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             bias=attention_bias,
             upcast_attention=upcast_attention,
         )
-        if zero_module_type == "zero_linear":
-            # NOTE: zero_module cannot apply to successive layers.
-            self.connector = zero_module(nn.Linear(dim, dim))
-        elif zero_module_type == "gated":
-            self.connector = GatedConnector(dim)
-        elif zero_module_type == "none":
-            # TODO: if this block is in controlnet, we may not need zero here.
-            self.connector = lambda x: x
-        else:
-            raise TypeError(f"Unknown zero module type: {zero_module_type}")
 
         # ST-Attn from Tune-A-Video
         self.norm5 = (AdaLayerNorm(dim, num_embeds_ada_norm)
@@ -121,6 +111,21 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             upcast_attention=upcast_attention,
         )
 
+        if zero_module_type == "zero_linear":
+            # NOTE: zero_module cannot apply to successive layers.
+            self.connectors = [
+                zero_module(nn.Linear(dim, dim)) for _ in range(3)
+            ]
+        elif zero_module_type == "gated":
+            self.connectors = [GatedConnector(dim) for _ in range(3)]
+        elif zero_module_type == "none":
+            # TODO: if this block is in controlnet, we may not need zero here.
+            self.connectors = [lambda x: x for _ in range(3)]
+        else:
+            raise TypeError(f"Unknown zero module type: {zero_module_type}")
+
+        self.connector4, self.connector5, self.connector6 = self.connectors
+
     @property
     def new_module(self):
         ret = {
@@ -131,8 +136,12 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
             "norm6": self.norm6,
             "attn6": self.attn6,
         }
-        if isinstance(self.connector, nn.Module):
-            ret["connector"] = self.connector
+        if isinstance(self.connector4, nn.Module):
+            ret["connector4"] = self.connector4
+        if isinstance(self.connector5, nn.Module):
+            ret["connector5"] = self.connector5
+        if isinstance(self.connector6, nn.Module):
+            ret["connector6"] = self.connector6
         return ret
 
     @property
@@ -280,6 +289,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
                                  if self.only_cross_attention else None,
                                  video_length=self.n_frame,
                                  num_cams=self.n_cam)
+        attn_output = self.connector5(attn_output)
         hidden_states = attn_output + hidden_states
         # print(f"hidden_states after S-T Attention {hidden_states.shape}")
 
@@ -339,7 +349,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
                     attn_output[:, cam_i] = torch.sum(attn_out_mv, dim=1)
             attn_output = rearrange(attn_output, 'b n ... -> (b n) ...')
         # apply zero init connector (one layer)
-        attn_output = self.connector(attn_output)
+        attn_output = self.connector4(attn_output)
         # short-cut
         hidden_states = attn_output + hidden_states
 
@@ -359,6 +369,7 @@ class BasicMultiviewVideoTransformerBlock(BasicTransformerBlock):
                                 s=seq_len,
                                 f=self.n_frame,
                                 n=self.n_cam)
+        attn_output = self.connector6(attn_output)
         hidden_states = attn_output + hidden_states
 
         # *********  3. Feed-forward  *********
