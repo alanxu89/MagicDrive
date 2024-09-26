@@ -182,8 +182,17 @@ class BaseValidator:
 
                     formatted_images = format_ori_with_gen(
                         log["ori_img"], log["gen_img_list"])
+                    formatted_images1 = format_ori_with_gen(
+                        log["ori_depth"], [log["ori_semantic_map"]])
+
+                    final_image = concat_6_views([
+                        to_pil_image(formatted_images),
+                        to_pil_image(formatted_images1)
+                    ],
+                                                 oneline=True)
+                    final_image = np.asarray(final_image)
                     tracker.writer.add_image(validation_prompt,
-                                             formatted_images,
+                                             final_image,
                                              step,
                                              dataformats="HWC")
 
