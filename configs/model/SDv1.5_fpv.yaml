@@ -21,8 +21,11 @@ unet:
   crossview_attn_type: ${..crossview_attn_type}
   img_size: ${dataset.image_size}
   num_frames: ${dataset.num_frames}
+
+drop_cond_ratio: 0.25
     
 # model_module: diffusers.pipelines.controlnet.multicontrolnet.MultiControlNetModel
+controlnet_dir: controlnet
 controlnets:
   - name: semantic_map
     module: diffusers.models.controlnet.ControlNetModel

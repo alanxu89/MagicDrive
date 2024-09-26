@@ -42,7 +42,8 @@ class ControlnetUnetWrapper(ModelMixin):
         self.unet_in_fp16 = unet_in_fp16
 
     def forward(self, noisy_latents, timesteps, encoder_hidden_states,
-                controlnet_images, **kwargs):
+                encoder_hidden_states_uncond, controlnet_images, bsz,
+                uncond_prob, **kwargs):
         """
         noisy_latents: [b*t*n, c, h, w]
         """
@@ -62,6 +63,16 @@ class ControlnetUnetWrapper(ModelMixin):
             **kwargs,
         )
         # fmt: on
+
+        # use encoder_hidden_states_uncond with p=uncond_prob
+        if uncond_prob > 0:
+            M = encoder_hidden_states.shape[0] // bsz  # b*t*n/b = t*n
+            drop_ids = torch.rand(
+                bsz, device=encoder_hidden_states.device).cuda() < uncond_prob
+            drop_ids = repeat(drop_ids, 'b -> (b m) 1 1', m=M)
+            encoder_hidden_states = torch.where(drop_ids,
+                                                encoder_hidden_states_uncond,
+                                                encoder_hidden_states)
 
         # Predict the noise residual
         # NOTE: Since we fix most of the model, we cast the model to fp16 and
@@ -323,8 +334,10 @@ class FPVRunner(BaseRunner):
                 noisy_latents,
                 timesteps,
                 encoder_hidden_states,
-                # encoder_hidden_states_uncond, # dont use this for now
+                encoder_hidden_states_uncond,
                 controlnet_images,
+                bsz,
+                self.cfg.model.drop_cond_ratio,
                 **batch['kwargs'],
             )
 
