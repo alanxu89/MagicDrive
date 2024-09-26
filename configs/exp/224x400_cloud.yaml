@@ -18,8 +18,16 @@ runner:
   validation_index: [1, 31, 62, 97]
   validation_times: 1
 
+  pipeline_param:
+    guidance_scale: 2  # if > 1, enable classifier-free guidance
+    num_inference_steps: 100
+
+
 dataset:
   num_frames: 8
   dataset_root: /root/autodl-tmp/nuscenes/nuscenes_data_processed
 
 log_root_prefix: /root/autodl-tmp/magicdrive-log
+
+model:
+  drop_cond_ratio: 0.25
