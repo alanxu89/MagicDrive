@@ -317,12 +317,7 @@ class FPVRunner(BaseRunner):
                                            t=N_frame,
                                            n=N_cam)
             encoder_hidden_states_uncond = self.text_encoder(
-                batch["uncond_ids"])[0]
-            encoder_hidden_states_uncond = repeat(encoder_hidden_states_uncond,
-                                                  'b ... -> (b t n) ...',
-                                                  t=N_frame,
-                                                  n=N_cam)
-            # print(f"encoder_hidden_states shape {encoder_hidden_states.shape}")
+                batch["uncond_ids"])[0]  # [1, max_len, 768]
 
             cond1 = batch["depth"].to(dtype=self.weight_dtype)
             cond1 = cond1.reshape(-1, *cond1.shape[-3:])
