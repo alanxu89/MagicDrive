@@ -71,6 +71,9 @@ class DatasetFromCSV(torch.utils.data.Dataset):
             all_data,
             (-1, self.n_cams, self.n_modes, C, H, W))  # [T, N, M, C, H, W]
 
+        # reindex to ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT']
+        all_data = all_data[:, [1, 0, 2]]
+
         # Sampling video frames
         # total_frames = len(all_data)
         # start_frame_ind = random.randint(0, total_frames - self.num_real_frames)
