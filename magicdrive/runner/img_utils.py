@@ -2,6 +2,16 @@ from typing import Tuple
 from PIL import Image
 
 
+def concat_m_by_n_views(imgs: Tuple[Image.Image, ...], row, col):
+    images = []
+    for i in range(row):
+        image = img_concat_h(*imgs[i * col:(i + 1) * col])
+        images.append(image)
+
+    final_image = img_concat_v(*images)
+    return final_image
+
+
 def concat_6_views(imgs: Tuple[Image.Image, ...], oneline=False):
     if oneline:
         image = img_concat_h(*imgs)

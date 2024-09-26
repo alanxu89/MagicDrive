@@ -17,6 +17,7 @@ from magicdrive.runner.utils import (
     visualize_map,
     img_m11_to_01,
     concat_6_views,
+    concat_m_by_n_views,
 )
 from magicdrive.misc.common import move_to
 from magicdrive.misc.test_utils import draw_box_on_imgs
@@ -124,7 +125,7 @@ class BaseValidator:
                     assert len(image.images) == 1
                     image: List[Image.Image] = image.images[0]
 
-                gen_img = concat_6_views(image, oneline=True)
+                gen_img = concat_m_by_n_views(image, self.n_frame, self.n_cam)
                 gen_list.append(gen_img)
                 # if self.cfg.runner.validation_show_box:
                 #     image_with_box = draw_box_on_imgs(
@@ -146,19 +147,19 @@ class BaseValidator:
                 to_pil_image(img_m11_to_01(val_input["pixel_values"][0][i]))
                 for i in range(N)
             ]
-            print(len(ori_imgs))
-            ori_img = concat_6_views(ori_imgs)
+            ori_img = concat_m_by_n_views(ori_imgs, self.n_frame, self.n_cam)
             # make image for 6 views and save to dict
             ori_depths = [
                 to_pil_image(img_m11_to_01(val_input["depth"][0][i]))
                 for i in range(N)
             ]
-            ori_depth = concat_6_views(ori_depths)
+            ori_depth = concat_m_by_n_views(ori_depths, self.n_frame,
+                                            self.n_cam)
             ori_maps = [
                 to_pil_image(img_m11_to_01(val_input["semantic_map"][0][i]))
                 for i in range(N)
             ]
-            ori_map = concat_6_views(ori_maps)
+            ori_map = concat_m_by_n_views(ori_maps, self.n_frame, self.n_cam)
             # ori_img_wb = concat_6_views(
             #     draw_box_on_imgs(self.cfg, 0, val_input, ori_imgs))
             # map_img_np = visualize_map(
