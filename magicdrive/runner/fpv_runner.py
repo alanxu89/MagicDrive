@@ -319,10 +319,13 @@ class FPVRunner(BaseRunner):
             encoder_hidden_states_uncond = self.text_encoder(
                 batch["uncond_ids"])[0]  # [1, max_len, 768]
 
-            cond1 = batch["depth"].to(dtype=self.weight_dtype)
-            cond1 = cond1.reshape(-1, *cond1.shape[-3:])
-            cond2 = batch["depth"].to(dtype=self.weight_dtype)
-            cond2 = cond2.reshape(-1, *cond2.shape[-3:])
+            cond1 = batch["depth"].to(dtype=self.weight_dtype)  # [b c t n h w]
+            cond1 = rearrange(cond1, 'b c t n h w -> (b t n) c h w')
+
+            cond2 = batch["semantic_map"].to(
+                dtype=self.weight_dtype)  # [b c t n h w]
+            cond2 = rearrange(cond2, 'b c t n h w -> (b t n) c h w')
+
             controlnet_images = [cond1, cond2]
 
             model_pred = self.controlnet_unet(
