@@ -348,7 +348,7 @@ class StableDiffusionFPVMultiControlNetPipeline(
         # 6. Prepare latent variables
         num_channels_latents = self.unet.config.in_channels
         latents = self.prepare_latents(
-            batch_size * num_images_per_prompt,
+            batch_size * num_images_per_prompt * frames * cams,
             num_channels_latents,
             height,
             width,
@@ -365,7 +365,7 @@ class StableDiffusionFPVMultiControlNetPipeline(
         # assert camera_param.shape[0] == batch_size, \
         #     f"Except {batch_size} camera params, but you have bs={len(camera_param)}"
         # N_cam = camera_param.shape[1]
-        latents = repeat(latents, 'b ... -> (b f n) ...', f=frames, n=cams)
+        # latents = repeat(latents, 'b ... -> (b f n) ...', f=frames, n=cams)
 
         # prompt_embeds, no need for b, len, 768
         # image, no need for b, c, 200, 200
