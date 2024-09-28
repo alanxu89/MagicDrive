@@ -13,18 +13,20 @@ runner:
   validation_show_box: true
   enable_xformers_memory_efficient_attention: false  # always need this.
   bbox_add_ratio: 0.1
-  checkpointing_steps: 5000
+  checkpointing_steps: 10000
   validation_steps: 2500
   validation_index: [1, 31, 62, 97]
   validation_times: 1
 
   pipeline_param:
     guidance_scale: 2  # if > 1, enable classifier-free guidance
-    num_inference_steps: 100
+    num_inference_steps: 50
+    frames: 6
+    cams: 3
 
 
 dataset:
-  num_frames: 8
+  num_frames: 6
   dataset_root: /root/autodl-tmp/nuscenes/nuscenes_data_processed
 
 log_root_prefix: /root/autodl-tmp/magicdrive-log
